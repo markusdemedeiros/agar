@@ -46,7 +46,11 @@
 --   exercise the basic rules; concurrent ones (Fork, ParAdd, Invariant,
 --   Mutex, Spin, LaterCredits, Counter, ProducerConsumer) exercise
 --   forking + invariants + ghost state, several closing via
---   `Machine.Adequate`.
+--   `Machine.Adequate`. `Readback` is the lone concurrent example
+--   closing adequacy at a *nontrivial* value (`Val.int 42`, not
+--   `Val.unit`) — its main thread spin-loads a producer-written shared
+--   register and returns the observed value, demonstrating
+--   functional-correctness adequacy in the presence of forking.
 
 module
 
@@ -95,6 +99,7 @@ public import Agar.Examples.TicketLock
 public import Agar.Examples.TreiberPush
 public import Agar.Examples.ReaderCount
 public import Agar.Examples.Peterson
+public import Agar.Examples.Readback
 
 -- High-level `implements` predicate tying closed adequacy theorems
 -- to mathematical functions.
