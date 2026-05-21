@@ -1,0 +1,20 @@
+name = "agar"
+version = "0.1.0"
+defaultTargets = ["Agar", "AgarAxiomAudit"]
+
+[[require]]
+name = "iris"
+git = "https://github.com/leanprover-community/iris-lean.git"
+rev = "b980ebc"
+subDir = "Iris"
+
+[[lean_lib]]
+name = "Agar"
+
+[[lean_lib]]
+name = "AgarAxiomAudit"
+roots = ["Test"]
+
+[[lean_exe]]
+name = "agar"
+root = "Main"
