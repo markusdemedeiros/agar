@@ -52,10 +52,8 @@ def progInvLoad : Program where
 theorem progInvLoad_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progInvLoad n
-            (Machine.initial progInvLoad) μ') :
-    Machine.Adequate progInvLoad μ' Val.unit := by
+    :
+    Machine.safe progInvLoad (· = Val.unit) := by
   adequacy_with_heap_intro progInvLoad Val.unit
   wp_pures
   wp_alloc_intro HP
@@ -85,10 +83,8 @@ def progSharedFlag : Program where
 theorem progSharedFlag_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progSharedFlag n
-            (Machine.initial progSharedFlag) μ') :
-    Machine.Adequate progSharedFlag μ' Val.unit := by
+    :
+    Machine.safe progSharedFlag (· = Val.unit) := by
   adequacy_with_heap_intro progSharedFlag Val.unit
   wp_pures
   wp_alloc_intro HP
@@ -133,10 +129,8 @@ def progSharedRead : Program where
 theorem progSharedRead_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progSharedRead n
-            (Machine.initial progSharedRead) μ') :
-    Machine.Adequate progSharedRead μ' Val.unit := by
+    :
+    Machine.safe progSharedRead (· = Val.unit) := by
   adequacy_with_heap_intro progSharedRead Val.unit
   wp_pures
   wp_alloc_intro HP
@@ -175,10 +169,8 @@ def progCasFlip : Program where
 theorem progCasFlip_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCasFlip n
-            (Machine.initial progCasFlip) μ') :
-    Machine.Adequate progCasFlip μ' Val.unit := by
+    :
+    Machine.safe progCasFlip (· = Val.unit) := by
   adequacy_with_heap_intro progCasFlip Val.unit
   wp_pures
   wp_alloc_intro HP

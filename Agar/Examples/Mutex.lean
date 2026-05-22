@@ -119,10 +119,8 @@ private theorem critProc_wp_body
 theorem progMiniMutex_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progMiniMutex n
-            (Machine.initial progMiniMutex) μ') :
-    Machine.Adequate progMiniMutex μ' Val.unit := by
+    :
+    Machine.safe progMiniMutex (· = Val.unit) := by
   adequacy_with_heap_intro progMiniMutex Val.unit
   wp_pures
   wp_alloc_intro HPL
@@ -249,10 +247,8 @@ private theorem critProcExcl_wp_body
 theorem progMiniMutexExcl_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F] [LockGpreS GF]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progMiniMutexExcl n
-            (Machine.initial progMiniMutexExcl) μ') :
-    Machine.Adequate progMiniMutexExcl μ' Val.unit := by
+    :
+    Machine.safe progMiniMutexExcl (· = Val.unit) := by
   adequacy_with_heap_intro progMiniMutexExcl Val.unit
   wp_pures
   wp_alloc_intro lkLoc' HPL
@@ -412,10 +408,8 @@ theorem progMutexCounter_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
     [LockGpreS GF] [CounterGpreS GF]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progMutexCounter n
-            (Machine.initial progMutexCounter) μ') :
-    Machine.Adequate progMutexCounter μ' Val.unit := by
+    :
+    Machine.safe progMutexCounter (· = Val.unit) := by
   adequacy_with_heap_intro progMutexCounter Val.unit
   wp_pures
   wp_alloc_intro lkLoc' HPL

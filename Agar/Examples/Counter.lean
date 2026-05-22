@@ -125,10 +125,8 @@ private theorem casBumpProc_wp_body
 theorem progCounterCas_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F] [CounterGpreS GF]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCounterCas n
-            (Machine.initial progCounterCas) μ') :
-    Machine.Adequate progCounterCas μ' (Val.int 1) := by
+    :
+    Machine.safe progCounterCas (· = (Val.int 1)) := by
   adequacy_with_heap_intro progCounterCas (Val.int 1)
   wp_pures
   wp_alloc_intro cLoc' HPC
@@ -266,7 +264,7 @@ theorem progCounterCas_closed
 
 Same CAS-bump workers as `progCounterCas`, but main reads the counter
 exactly once instead of spin-waiting. The observed value depends on
-whether any forked CAS has fired yet. `Machine.AdequateP` captures the
+whether any forked CAS has fired yet. `Machine.safe`-with-predicate captures the
 race precisely. -/
 
 def progCounterRace : Program where
@@ -282,10 +280,8 @@ def progCounterRace : Program where
 theorem progCounterRace_closedP
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F] [CounterGpreS GF]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCounterRace n
-            (Machine.initial progCounterRace) μ') :
-    Machine.AdequateP progCounterRace μ'
+    :
+    Machine.safe progCounterRace
       (fun v => v = Val.int 0 ∨ v = Val.int 1) := by
   adequacy_with_heap_intro_P progCounterRace
     (fun v => v = Val.int 0 ∨ v = Val.int 1)

@@ -118,10 +118,12 @@ A typical proof script — verifying `progFactWith` returns `factorial n`
 ```lean
 theorem progFactWith_implements_factorial :
     Program.implementsUnary progFactWith (fun n => (factorial n : Int)) := by
-  intro GF F _ _ _ n steps μ' htr
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int (factorial n : Int)) (progFactWith n) ?_ steps μ' htr
+  intro GF F _ _ _ n
+  unfold Machine.safe Machine.SafeTp
+  intro steps μ' htr k t hget
+  refine wp_strong_adequacy_bupd_pointwise (GF := GF)
+    (φ := fun v => v = Val.int (factorial n : Int)) (progFactWith n) ?_
+    steps μ' htr k t hget
   start_closed_proof_with_heap progFactWith
   wp_step                       -- wp_seq
   iintro !>
@@ -163,16 +165,30 @@ carrying the user post and the rest carrying `fork_post`) is preserved
 across `Machine.Step`; iteration gives an n-step soundness tower
 discharged by `step_fupdN_soundness_no_lc'`.
 
-The `Machine.Adequate` predicate packages safety + main-postcondition
-for downstream use:
+The canonical adequacy conclusion exposed to clients is `Machine.safe`,
+a verbatim transcription of `safe-tp_φ` / `safe_φ` from Gregersen et al.,
+*Completeness of Iris-Based Program Logics* (§3.2):
 
 ```lean
-def Machine.Adequate (prog : Program) (μ : Machine) (v : Val) : Prop :=
-  Machine.Safe prog.procs μ ∧ Machine.MainReturns μ v
+def Machine.SafeTp (prog : Program) (μ : Machine) (φ : Val → Prop) : Prop :=
+  ∀ n μ', Machine.StepStarN prog n μ μ' →
+    ∀ k t, μ'.threads[k]? = some t →
+      (∃ v, t.toValue = some v ∧ (k = 0 → φ v)) ∨ thread_reducible prog.procs μ'.mem t
+
+def Machine.safe (prog : Program) (φ : Val → Prop) : Prop :=
+  Machine.SafeTp prog (Machine.initial prog) φ
 ```
 
-Every `_closed` example proof in `Examples/` concludes
-`Machine.Adequate prog μ' v` for a concrete `v`.
+Compared to the paper's `safe-tp` we expose the step count `n` as an
+explicit witness instead of folding it under an existential (`→*_tp` ≅
+`∃ n, StepStarN n`). Every `_closed` example proof in `Examples/`
+concludes `Machine.safe prog (· = v)` for a concrete `v`; predicate-form
+specs land directly at `Machine.safe prog φ`.
+
+The bridge between the indexed-trace machinery and the paper-aligned
+predicate is `wp_strong_adequacy_bupd_pointwise` (and its non-bupd
+sibling), which conclude the pointwise `SafeTp`-body at one `(n, μ', k, t)`
+point and chain through the existing `wp_strong_adequacy[_bupd]`.
 
 ## 6. Denotational fragment
 
@@ -234,7 +250,7 @@ def pcall (params : List (Name × Expr)) (body : PureStmt)
 ## 7. Verification gallery
 
 `Examples/` contains the closed verifications. Each terminates a
-`_closed` theorem at `Machine.Adequate`:
+`_closed` theorem at `Machine.safe`:
 
 | File                        | What it proves                                                 |
 |-----------------------------|----------------------------------------------------------------|
@@ -265,25 +281,23 @@ def counterInv (cLoc : Loc) (γ : GName) : IProp GF :=
   iprop((cLoc ↦ Val.int 0 ∗ counter_auth γ 0 ∗ counter_frag γ 0)
         ∨ (cLoc ↦ Val.int 1 ∗ counter_auth γ 1 ∗ counter_frag γ 1))
 
-theorem progCounterCas_closed (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCounterCas n
-            (Machine.initial progCounterCas) μ') :
-    Machine.Adequate progCounterCas μ' Val.unit
+theorem progCounterCas_closed :
+    Machine.safe progCounterCas (· = Val.unit)
 ```
 
 The 3-cell **insertion sort** is the artifact's largest end-to-end
 heap-mutation proof (~460 LoC):
 
 ```lean
-theorem progIsort3_sorted (v1 v2 v3 : Int) ... :
-    Machine.Adequate (progIsort3 v1 v2 v3) μ' (Val.int (med3 v1 v2 v3))
+theorem progIsort3_sorted (v1 v2 v3 : Int) :
+    Machine.safe (progIsort3 v1 v2 v3) (· = Val.int (med3 v1 v2 v3))
   ∧ (min3 v1 v2 v3 ≤ med3 v1 v2 v3 ∧ med3 v1 v2 v3 ≤ max3 v1 v2 v3)
   ∧ min3 v1 v2 v3 + med3 v1 v2 v3 + max3 v1 v2 v3 = v1 + v2 + v3
 ```
 
 ## 8. `implements` — top-level functional specs
 
-`Iris/Implements.lean` lifts the per-program `Machine.Adequate`
+`Iris/Implements.lean` lifts the per-program `Machine.safe`
 conclusions into a named predicate connecting a parameterised program
 family to its mathematical denotation:
 
@@ -291,9 +305,8 @@ family to its mathematical denotation:
 def Program.implementsUnary (prog : Nat → Program) (f : Nat → Int) : Prop :=
   ∀ {GF : BundledGFunctors.{0,0,0}} {F : Type} [UFraction F]
     [InvGpreS GF] [AgarGpreS GF F]
-    (n : Nat) (steps : Nat) (μ' : Machine),
-      Machine.StepStarN (prog n) steps (Machine.initial (prog n)) μ' →
-      Machine.Adequate (prog n) μ' (Val.int (f n))
+    (n : Nat),
+      Machine.safe (prog n) (· = Val.int (f n))
 ```
 
 with concrete instances for factorial, sum, and binary max:

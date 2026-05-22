@@ -57,41 +57,41 @@ section Wp
 variable {GF : BundledGFunctors.{0,0,0}} {hlc : Bool} [InvGS_gen hlc GF]
 variable {F : Type _} [UFraction F] [AgarG GF F]
 
-#check @wp_skip_cons
-#check @wp_seq
-#check @wp_assign
-#check @wp_ite_true
-#check @wp_ite_false
-#check @wp_while
-#check @wp_ret_top
-#check @wp_skip_frame_cons
-#check @wp_skip_frame_nil
-#check @wp_ret_pop_cons
-#check @wp_ret_pop_nil
-#check @wp_call
-#check @wp_fork
-#check @wp_value
-#check @wp_load
-#check @wp_store
-#check @wp_free
-#check @wp_alloc
-#check @wp_cas_succ
-#check @wp_cas_fail
+example := @wp_skip_cons
+example := @wp_seq
+example := @wp_assign
+example := @wp_ite_true
+example := @wp_ite_false
+example := @wp_while
+example := @wp_ret_top
+example := @wp_skip_frame_cons
+example := @wp_skip_frame_nil
+example := @wp_ret_pop_cons
+example := @wp_ret_pop_nil
+example := @wp_call
+example := @wp_fork
+example := @wp_value
+example := @wp_load
+example := @wp_store
+example := @wp_free
+example := @wp_alloc
+example := @wp_cas_succ
+example := @wp_cas_fail
 
 /-! ## WpRulesInv: atomic-triple primitives -/
 
-#check @wp_load_inv
-#check @wp_store_inv
-#check @wp_cas_inv
-#check @wp_load_atomic
-#check @wp_store_atomic
-#check @wp_cas_atomic
+example := @wp_load_inv
+example := @wp_store_inv
+example := @wp_cas_inv
+example := @wp_load_atomic
+example := @wp_store_atomic
+example := @wp_cas_atomic
 
 /-! ## WpSpin: three spin variants -/
 
-#check @wp_spin
-#check @wp_spin_fixed_env
-#check @wp_spin_invariant
+example := @wp_spin
+example := @wp_spin_fixed_env
+example := @wp_spin_invariant
 
 end Wp
 
@@ -104,9 +104,9 @@ section Hoare
 variable {GF : BundledGFunctors.{0,0,0}} {hlc : Bool} [InvGS_gen hlc GF]
 variable {F : Type _} [UFraction F] [AgarG GF F]
 
-#check @doneUnit
-#check @doneUnit_triple
-#check @doneUnit_triple_explicit
+example := @doneUnit
+example := @doneUnit_triple
+example := @doneUnit_triple_explicit
 
 /-- Ambient-capture form. -/
 theorem smoke_hoare_ambient
@@ -125,12 +125,12 @@ end Hoare
 section Lock
 variable {GF : BundledGFunctors.{0,0,0}} [LockGpreS GF]
 
-#check @LockF
-#check @LockGpreS
-#check @lockOwner
-#check @lockOwner_alloc
-#check @lockOwner_exclusive
-#check @lockOwner_timeless
+example := @LockF
+example := @LockGpreS
+example := @lockOwner
+example := @lockOwner_alloc
+example := @lockOwner_exclusive
+example := @lockOwner_timeless
 
 /-- Trivial proof exercising `lockOwner_alloc`. -/
 theorem smoke_lock_alloc :
@@ -144,12 +144,12 @@ end Lock
 section Counter
 variable {GF : BundledGFunctors.{0,0,0}} [CounterGpreS GF]
 
-#check @CounterF
-#check @CounterGpreS
-#check @counter_auth
-#check @counter_frag
-#check @counter_alloc
-#check @counter_increment
+example := @CounterF
+example := @CounterGpreS
+example := @counter_auth
+example := @counter_frag
+example := @counter_alloc
+example := @counter_increment
 
 /-- Trivial proof exercising `counter_alloc`. -/
 theorem smoke_counter_alloc :

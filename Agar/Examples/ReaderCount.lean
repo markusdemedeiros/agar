@@ -115,10 +115,8 @@ private theorem readerCountProc_wp_body
 theorem progReaderCount_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progReaderCount n
-            (Machine.initial progReaderCount) μ') :
-    Machine.Adequate progReaderCount μ' Val.unit := by
+    :
+    Machine.safe progReaderCount (· = Val.unit) := by
   adequacy_with_heap_intro progReaderCount Val.unit
   wp_pures
   wp_alloc_intro cLoc' HPC

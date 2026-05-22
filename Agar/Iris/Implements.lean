@@ -15,7 +15,7 @@ public import Agar.Examples.Recursion
 /-! # `implements` — high-level specs tying closed adequacy to math functions
 
 The `_closed` theorems in `Examples/` only ever conclude
-`Machine.Adequate prog μ' v` for some concrete `v`. They are low-level:
+`Machine.safe prog (· = v)` for some concrete `v`. They are low-level:
 they speak about a single program at a time, and the connection between
 the program and the mathematical function it computes is folklore —
 only visible by reading the value `v` in the conclusion.
@@ -43,9 +43,8 @@ function `f : Nat → Int` if every reachable machine state of
 def Program.implementsUnary (prog : Nat → Program) (f : Nat → Int) : Prop :=
   ∀ {GF : BundledGFunctors.{0,0,0}} {F : Type} [UFraction F]
     [InvGpreS GF] [AgarGpreS GF F]
-    (n : Nat) (steps : Nat) (μ' : Machine),
-      Machine.StepStarN (prog n) steps (Machine.initial (prog n)) μ' →
-      Machine.Adequate (prog n) μ' (Val.int (f n))
+    (n : Nat),
+      Machine.safe (prog n) (· = Val.int (f n))
 
 /-- Binary version: `prog : Nat → Nat → Program` implements
 `f : Nat → Nat → Int`. -/
@@ -53,19 +52,16 @@ def Program.implementsBinary (prog : Nat → Nat → Program)
     (f : Nat → Nat → Int) : Prop :=
   ∀ {GF : BundledGFunctors.{0,0,0}} {F : Type} [UFraction F]
     [InvGpreS GF] [AgarGpreS GF F]
-    (a b : Nat) (steps : Nat) (μ' : Machine),
-      Machine.StepStarN (prog a b) steps (Machine.initial (prog a b)) μ' →
-      Machine.Adequate (prog a b) μ' (Val.int (f a b))
+    (a b : Nat),
+      Machine.safe (prog a b) (· = Val.int (f a b))
 
 /-- Nullary version: a closed `prog : Program` implements a constant
 value `v : Val` (the canonical observation of the main thread's
 return value). -/
 def Program.implementsNullary (prog : Program) (v : Val) : Prop :=
   ∀ {GF : BundledGFunctors.{0,0,0}} {F : Type} [UFraction F]
-    [InvGpreS GF] [AgarGpreS GF F]
-    (steps : Nat) (μ' : Machine),
-      Machine.StepStarN prog steps (Machine.initial prog) μ' →
-      Machine.Adequate prog μ' v
+    [InvGpreS GF] [AgarGpreS GF F],
+      Machine.safe prog (· = v)
 
 /-! ## Worked example: `progFactWith` implements `factorial`
 
@@ -92,10 +88,8 @@ every natural-number input. The proof is structurally identical to
 `fact_3_closed`, just universally quantified over `n`. -/
 theorem progFactWith_implements_factorial :
     Program.implementsUnary progFactWith (fun n => (factorial n : Int)) := by
-  intro GF F _ _ _ n steps μ' htr
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int (factorial n : Int)) (progFactWith n) ?_ steps μ' htr
+  intro GF F _ _ _ n
+  refine wp_safe_bupd (GF := GF) (progFactWith n) ?_
   start_closed_proof_with_heap progFactWith
   -- main = (v := call fact(n)) ; return v
   wp_step                     -- wp_seq
@@ -134,11 +128,12 @@ inputs. The math model is `if a < b then b else a` lifted to `Int`. -/
 theorem progMaxWith_implements_max :
     Program.implementsBinary progMaxWith
       (fun a b => (if (a : Int) < (b : Int) then (b : Int) else (a : Int))) := by
-  intro GF F _ _ _ a b steps μ' htr
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
+  intro GF F _ _ _ a b
+  unfold Machine.safe Machine.safeFrom Machine.SafeTp
+  intro steps μ' htr k t hget
+  refine wp_strong_adequacy_bupd_pointwise (GF := GF)
     (φ := fun v => v = Val.int (if (a : Int) < (b : Int) then (b : Int) else (a : Int)))
-    (progMaxWith a b) ?_ steps μ' htr
+    (progMaxWith a b) ?_ steps μ' htr k t hget
   start_closed_proof_with_heap progMaxWith
   wp_step
   iintro !>
@@ -169,10 +164,8 @@ def progSumWith (n : Nat) : Program where
 (the triangular number `0 + 1 + ... + n`) for every input. -/
 theorem progSumWith_implements_sumNat :
     Program.implementsUnary progSumWith (fun n => (sumNat n : Int)) := by
-  intro GF F _ _ _ n steps μ' htr
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int (sumNat n : Int)) (progSumWith n) ?_ steps μ' htr
+  intro GF F _ _ _ n
+  refine wp_safe_bupd (GF := GF) (progSumWith n) ?_
   start_closed_proof_with_heap progSumWith
   wp_step
   iintro !>

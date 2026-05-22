@@ -528,36 +528,25 @@ scoped macro_rules
 
 /-! ### `adequacy_with_heap_intro` — full adequacy entry-point
 
-A `prog_closed : Machine.Adequate prog μ' tgt` theorem invariably opens
-with the same four-line preamble: unfold `Machine.Adequate`, apply
-`wp_strong_adequacy_bupd` at the universally quantified `(n, μ', htr)`,
-and run `start_closed_proof_with_heap prog` to expose the WP for
-`Thread.initial (main of prog)`. This macro bundles those four lines
-into one.
-
-Usage requires the theorem's binders to be named `n`, `μ'`, `htr` (the
-established convention across the examples folder) and the GF context
-to be in scope as `GF`. -/
+A `prog_closed : Machine.safe prog (· = tgt)` theorem refines directly
+to `wp_safe_bupd`, then runs `start_closed_proof_with_heap` to expose
+the WP for `Thread.initial (main of prog)`. No `unfold` / `intro` dance:
+`wp_safe_bupd` returns `Machine.safe` in fused form. -/
 
 @[expose] scoped syntax "adequacy_with_heap_intro" ppSpace ident ppSpace term:max : tactic
 set_option hygiene false in
 scoped macro_rules
   | `(tactic| adequacy_with_heap_intro $p:ident $tgt:term) => `(tactic| (
-      unfold Machine.Adequate Machine.Safe Machine.MainReturns
-      refine wp_strong_adequacy_bupd (GF := GF)
-        (φ := fun v => v = $tgt) $p ?_ n μ' htr
+      refine wp_safe_bupd (GF := GF) (φ := fun v => v = $tgt) $p ?_
       start_closed_proof_with_heap $p))
 
-/-- Predicate-form variant: opens a `Machine.AdequateP prog μ' φ`
-obligation with the same heap-init boilerplate. The user supplies the
-predicate directly. -/
+/-- Predicate-form variant: opens a `Machine.safe prog φ` obligation
+with a user-supplied predicate (not just an equality target). -/
 @[expose] scoped syntax "adequacy_with_heap_intro_P" ppSpace ident ppSpace term:max : tactic
 set_option hygiene false in
 scoped macro_rules
   | `(tactic| adequacy_with_heap_intro_P $p:ident $φ:term) => `(tactic| (
-      unfold Machine.AdequateP Machine.Safe Machine.MainReturnsP
-      refine wp_strong_adequacy_bupd (GF := GF)
-        (φ := $φ) $p ?_ n μ' htr
+      refine wp_safe_bupd (GF := GF) (φ := $φ) $p ?_
       start_closed_proof_with_heap $p))
 
 /-! ## `wp_fork_emp` — fork with `fork_post := emp`

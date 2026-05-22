@@ -53,10 +53,8 @@ def progStackPushPop : Program where
 theorem progStackPushPop_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progStackPushPop n
-            (Machine.initial progStackPushPop) μ') :
-    Machine.Adequate progStackPushPop μ' (Val.int 7) := by
+    :
+    Machine.safe progStackPushPop (· = (Val.int 7)) := by
   adequacy_with_heap_intro progStackPushPop (Val.int 7)
   wp_steps
   wp_alloc_intro HStk         -- stk ↦ Val.int 0
@@ -112,10 +110,8 @@ def progStackLifo : Program where
 theorem progStackLifo_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progStackLifo n
-            (Machine.initial progStackLifo) μ') :
-    Machine.Adequate progStackLifo μ' (Val.int 1) := by
+    :
+    Machine.safe progStackLifo (· = (Val.int 1)) := by
   adequacy_with_heap_intro progStackLifo (Val.int 1)
   wp_steps
   wp_alloc_intro HStk
@@ -160,7 +156,7 @@ The driver loop is hand-unrolled (three explicit transfers) so the
 proof stays sequential and avoids the abstract-stack-chain
 infrastructure that a general while-loop reversal would need.
 
-Spec: `Machine.Adequate progStackReverse μ' (Val.int 1)`. Only true if
+Spec: `Machine.safe progStackReverse (· = Val.int 1)`. Only true if
 the transfer correctly reverses — a "lose pushes" implementation would
 read garbage from `dst`'s top, a FIFO would return `3`, and a stack
 that erases values would fail outright. -/
@@ -221,10 +217,8 @@ def progStackReverse : Program where
 theorem progStackReverse_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progStackReverse n
-            (Machine.initial progStackReverse) μ') :
-    Machine.Adequate progStackReverse μ' (Val.int 1) := by
+    :
+    Machine.safe progStackReverse (· = (Val.int 1)) := by
   adequacy_with_heap_intro progStackReverse (Val.int 1)
   -- Build src.
   wp_steps; wp_alloc_intro HSrc

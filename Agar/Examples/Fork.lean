@@ -40,9 +40,8 @@ def progForkUnit : Program where
 theorem progForkUnit_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progForkUnit n (Machine.initial progForkUnit) μ') :
-    Machine.Adequate progForkUnit μ' Val.unit := by
+    :
+    Machine.safe progForkUnit (· = Val.unit) := by
   adequacy_with_heap_intro progForkUnit Val.unit
   iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
     _ "unitProc" [] unitProc [] [] Env.empty [] _ rfl rfl rfl
@@ -69,9 +68,8 @@ def progForkAlloc : Program where
 theorem progForkAlloc_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progForkAlloc n (Machine.initial progForkAlloc) μ') :
-    Machine.Adequate progForkAlloc μ' Val.unit := by
+    :
+    Machine.safe progForkAlloc (· = Val.unit) := by
   adequacy_with_heap_intro progForkAlloc Val.unit
   iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
     _ "allocFreeProc" [] allocFreeProc [] [] Env.empty [] _ rfl rfl rfl

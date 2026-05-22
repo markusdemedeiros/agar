@@ -649,12 +649,9 @@ def progGcd64 : Program where
 theorem gcd_6_4_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progGcd64 n (Machine.initial progGcd64) μ') :
-    Machine.Adequate progGcd64 μ' (Val.int 2) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 2) progGcd64 ?_ n μ' htr
+    :
+    Machine.safe progGcd64 (· = (Val.int 2)) := by
+  refine wp_safe_bupd (GF := GF) progGcd64 ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA⟩
   imodintro
@@ -712,12 +709,9 @@ theorem gcd_6_4_closed
 theorem gcd_6_4_via_spec_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progGcd64 n (Machine.initial progGcd64) μ') :
-    Machine.Adequate progGcd64 μ' (Val.int 2) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 2) progGcd64 ?_ n μ' htr
+    :
+    Machine.safe progGcd64 (· = (Val.int 2)) := by
+  refine wp_safe_bupd (GF := GF) progGcd64 ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA⟩
   imodintro
@@ -917,12 +911,9 @@ def progSum3 : Program where
 theorem sum_3_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progSum3 n (Machine.initial progSum3) μ') :
-    Machine.Adequate progSum3 μ' (Val.int 6) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 6) progSum3 ?_ n μ' htr
+    :
+    Machine.safe progSum3 (· = (Val.int 6)) := by
+  refine wp_safe_bupd (GF := GF) progSum3 ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA⟩
   imodintro
@@ -955,12 +946,9 @@ def progAbsNeg3 : Program where
 theorem max_5_3_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progMax53 n (Machine.initial progMax53) μ') :
-    Machine.Adequate progMax53 μ' (Val.int 5) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 5) progMax53 ?_ n μ' htr
+    :
+    Machine.safe progMax53 (· = (Val.int 5)) := by
+  refine wp_safe_bupd (GF := GF) progMax53 ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA⟩
   imodintro
@@ -986,12 +974,9 @@ theorem max_5_3_closed
 theorem min_5_3_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progMin53 n (Machine.initial progMin53) μ') :
-    Machine.Adequate progMin53 μ' (Val.int 3) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 3) progMin53 ?_ n μ' htr
+    :
+    Machine.safe progMin53 (· = (Val.int 3)) := by
+  refine wp_safe_bupd (GF := GF) progMin53 ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA⟩
   imodintro
@@ -1016,12 +1001,9 @@ theorem min_5_3_closed
 theorem abs_neg3_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progAbsNeg3 n (Machine.initial progAbsNeg3) μ') :
-    Machine.Adequate progAbsNeg3 μ' (Val.int 3) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 3) progAbsNeg3 ?_ n μ' htr
+    :
+    Machine.safe progAbsNeg3 (· = (Val.int 3)) := by
+  refine wp_safe_bupd (GF := GF) progAbsNeg3 ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA⟩
   imodintro
@@ -1045,12 +1027,9 @@ theorem abs_neg3_closed
 theorem max_of_three_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progMaxOfThree n (Machine.initial progMaxOfThree) μ') :
-    Machine.Adequate progMaxOfThree μ' (Val.int 5) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 5) progMaxOfThree ?_ n μ' htr
+    :
+    Machine.safe progMaxOfThree (· = (Val.int 5)) := by
+  refine wp_safe_bupd (GF := GF) progMaxOfThree ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA⟩
   imodintro

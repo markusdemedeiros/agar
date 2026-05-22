@@ -32,7 +32,7 @@
 --                       `start_closed_proof_with_heap`,
 --                       `adequacy_with_heap_intro`, …).
 --   * `TacticsAtomic` — atomic-triple tactics (`wp_cas_atomic_split`).
---   * `Adequacy`      — `Machine.Adequate`, the closed-adequacy theorem
+--   * `Adequacy`      — `Machine.safe`, the closed-adequacy theorem
 --                       `wp_strong_adequacy`, `heap_adequacy_intro`.
 --   * `Hoare`         — `{{ P }} s {{ v, Q }}` notation.
 --   * `Implements`    — "program implements function" abstraction tying
@@ -48,7 +48,7 @@
 --   exercise the basic rules; concurrent ones (Fork, ParAdd, Invariant,
 --   Mutex, Spin, LaterCredits, Counter, ProducerConsumer) exercise
 --   forking + invariants + ghost state, several closing via
---   `Machine.Adequate`. `Readback` is the lone concurrent example
+--   `Machine.safe`. `Readback` is the lone concurrent example
 --   closing adequacy at a *nontrivial* value (`Val.int 42`, not
 --   `Val.unit`) — its main thread spin-loads a producer-written shared
 --   register and returns the observed value, demonstrating
@@ -79,6 +79,8 @@ public import Agar.Iris.Hoare
 public import Agar.Iris.Library
 public import Agar.Iris.Algebra.LockRA
 public import Agar.Iris.Algebra.CounterRA
+public import Agar.Iris.Algebra.ThreadpoolRA
+public import Agar.Iris.Completeness
 
 -- Example programs and their closed-adequacy proofs, plus the
 -- per-WP-rule sanity suite.
@@ -104,6 +106,8 @@ public import Agar.Examples.Peterson
 public import Agar.Examples.Readback
 public import Agar.Examples.StackPushPop
 public import Agar.Examples.StackReverse
+public import Agar.Examples.TreiberReverseClient
+public import Agar.Examples.NextGreater
 
 -- High-level `implements` predicate tying closed adequacy theorems
 -- to mathematical functions.

@@ -243,9 +243,8 @@ instantiation of the universal Löb spec `factProc_spec`. -/
 theorem fact_3_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progFact3 n (Machine.initial progFact3) μ') :
-    Machine.Adequate progFact3 μ' (Val.int 6) := by
+    :
+    Machine.safe progFact3 (· = (Val.int 6)) := by
   adequacy_with_heap_intro progFact3 (Val.int 6)
   wp_pures
   wp_apply_gen_call_spec factProc_spec_gen
@@ -268,10 +267,8 @@ but never observed by `toValue`. -/
 theorem progFact_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN Examples.progFact n
-            (Machine.initial Examples.progFact) μ') :
-    Machine.Adequate Examples.progFact μ' Val.unit := by
+    :
+    Machine.safe Examples.progFact (· = Val.unit) := by
   adequacy_with_heap_intro Examples.progFact Val.unit
   wp_apply_gen_call_spec factProc_spec_gen
     (Examples.procTable [("fact", Examples.fact)])

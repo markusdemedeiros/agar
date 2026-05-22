@@ -234,7 +234,7 @@ theorem denote_gcdPure (a b : Nat) (ha : 0 < a) (hb : 0 < b) :
   refine congrArg (Prod.mk _) ?_
   funext x
   by_cases hr : x = "result"
-  · subst hr; simp [abEnv, gcdEnv, Env.set]
+  · subst hr; simp [gcdEnv, Env.set]
   · by_cases hb' : x = "b"
     · subst hb'; simp [abEnv, gcdEnv, Env.set, hr]
     · by_cases ha' : x = "a"

@@ -114,10 +114,8 @@ private theorem pushOnceProc_wp_body
 theorem progTreiberPush_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progTreiberPush n
-            (Machine.initial progTreiberPush) μ') :
-    Machine.Adequate progTreiberPush μ' Val.unit := by
+    :
+    Machine.safe progTreiberPush (· = Val.unit) := by
   adequacy_with_heap_intro progTreiberPush Val.unit
   wp_pures
   wp_alloc_intro sLoc' HPS
@@ -165,10 +163,8 @@ def progTreiberPushRace : Program where
 theorem progTreiberPushRace_closedP
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progTreiberPushRace n
-            (Machine.initial progTreiberPushRace) μ') :
-    Machine.AdequateP progTreiberPushRace μ'
+    :
+    Machine.safe progTreiberPushRace
       (fun v => v = Val.int 0 ∨ ∃ l : Loc, v = Val.loc l) := by
   adequacy_with_heap_intro_P progTreiberPushRace
     (fun v => v = Val.int 0 ∨ ∃ l : Loc, v = Val.loc l)

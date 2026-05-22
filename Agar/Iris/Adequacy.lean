@@ -707,53 +707,192 @@ end StrongAdequacyBupd
 
 end StrongAdequacyMain
 
-/-! ## Named adequacy predicates
+/-! ## Paper-aligned safety predicates
 
-The strong-adequacy theorems above conclude with an ad-hoc conjunction of
-per-thread safety and a main-thread postcondition. The predicates below
-package those two clauses (and their conjunction) under stable names so
-client `_closed` theorems can state their conclusion as
-`Machine.Adequate prog μ' v` rather than spelling out the conjunction.
+The canonical adequacy conclusion exposed to clients is `Machine.safe`,
+a verbatim transcription of the safe_φ / safe-tp_φ predicates from
+Gregersen et al., *Completeness of Iris-Based Program Logics*, §3.2:
 
-These are plain `def`s that reduce *definitionally* to the same conjunction
-returned by `wp_strong_adequacy[_bupd]`, so an `unfold` at the start of a
-`_closed` proof is the only adjustment needed. -/
+```
+safe-tp_φ(ē, σ) ≜ ∀ ē', σ'. (ē, σ) →*_tp (ē', σ') ⟹
+  ∀ n, e''. ē'[n] = e'' ⟹
+    (∃ v. e'' = v ∧ (n = 0 ⟹ φ(v))) ∨ red(e'', σ')
+safe_φ(e, σ) ≜ safe-tp_φ([e], σ)
+```
 
-/-- **Safety.** Every thread in `μ` is either terminated or reducible
-under `procs` and `μ.mem`. -/
-def Machine.Safe (procs : Name → Option Proc) (μ : Machine) : Prop :=
-  ∀ t ∈ μ.threads, t.terminated = true ∨ thread_reducible procs μ.mem t
+The only deviation: we expose the step-count `n` as an explicit witness
+(via `Machine.StepStarN`) rather than folding it under an existential
+(`→*_tp`). The two formulations are operationally equivalent — the
+paper's `→*_tp` is `∃ n, StepStarN n`. Exposing `n` simplifies the
+bridge to the indexed `wp_strong_adequacy[_bupd]` machinery and lets
+each `_closed` proof introduce a concrete step count.
+-/
 
-/-- **Main-thread postcondition.** If the main thread of `μ` has
-terminated to a `Val`, that value is `v`. -/
-def Machine.MainReturns (μ : Machine) (v : Val) : Prop :=
-  ∀ (th : Thread) (rest : List Thread), μ.threads = th :: rest →
-    ∀ v', th.toValue = some v' → v' = v
+/-- **Paper-aligned thread-pool safety.** Mirrors `safe-tp_φ(ē, σ)`. For
+every reachable configuration `μ'`, every thread at index `k` is either
+a value (and if `k = 0`, the value satisfies `φ`) or reducible. -/
+def Machine.SafeTp (prog : Program) (μ : Machine) (φ : Val → Prop) : Prop :=
+  ∀ n μ', Machine.StepStarN prog n μ μ' →
+    ∀ k t, μ'.threads[k]? = some t →
+      (∃ v, t.toValue = some v ∧ (k = 0 → φ v)) ∨ thread_reducible prog.procs μ'.mem t
 
-/-- **Combined adequacy.** Safety of the whole pool together with the
-main-thread postcondition. This is the canonical conclusion of every
-`_closed` theorem in the examples. -/
-def Machine.Adequate (prog : Program) (μ : Machine) (v : Val) : Prop :=
-  Machine.Safe prog.procs μ ∧ Machine.MainReturns μ v
+/-- **Paper-aligned safety, σ-parametric.** Mirrors `safe_φ(e, σ) ≜
+safe-tp_φ([e], σ)`: safety of `prog.main` started from an arbitrary
+initial heap `σ`. -/
+def Machine.safeFrom (prog : Program) (σ : Mem) (φ : Val → Prop) : Prop :=
+  Machine.SafeTp prog { mem := σ, threads := [Thread.initial prog.main] } φ
 
-/-- **Predicate-form main postcondition.** Like `MainReturns` but the
-returned value satisfies an arbitrary property `φ` rather than equalling
-a fixed `v`. -/
-def Machine.MainReturnsP (μ : Machine) (φ : Val → Prop) : Prop :=
-  ∀ (th : Thread) (rest : List Thread), μ.threads = th :: rest →
-    ∀ v', th.toValue = some v' → φ v'
+/-- **Paper-aligned safety, closed-heap.** The empty-heap specialisation
+of `Machine.safeFrom`; this is what every `_closed` adequacy theorem
+concludes. -/
+def Machine.safe (prog : Program) (φ : Val → Prop) : Prop :=
+  Machine.safeFrom prog Mem.empty φ
 
-/-- **Predicate-form combined adequacy.** Safety plus a propositional
-postcondition `φ`. Strictly more expressive than `Adequate` (which is
-the special case `φ := (· = v)`); supports specs like "result is one of
-{0, 1}" that capture concurrent nondeterminism. -/
-def Machine.AdequateP (prog : Program) (μ : Machine) (φ : Val → Prop) : Prop :=
-  Machine.Safe prog.procs μ ∧ Machine.MainReturnsP μ φ
+theorem Machine.safe_eq_safeFrom (prog : Program) (φ : Val → Prop) :
+    Machine.safe prog φ = Machine.safeFrom prog Mem.empty φ := rfl
 
-/-- `Adequate prog μ v` is the special case of `AdequateP` for the
-equality predicate. -/
-theorem Machine.Adequate_iff_AdequateP {prog : Program} {μ : Machine} {v : Val} :
-    Machine.Adequate prog μ v ↔ Machine.AdequateP prog μ (· = v) := by
-  rfl
+theorem Machine.safe_eq_SafeTp (prog : Program) (φ : Val → Prop) :
+    Machine.safe prog φ = Machine.SafeTp prog (Machine.initial prog) φ := rfl
+
+/-- **Paper Lemma 11 (here).** Pointwise projection of `SafeTp` at the
+initial configuration: every thread of `μ` is either a value (and if at
+index 0, the value satisfies `φ`) or reducible. -/
+theorem Machine.SafeTp.here {prog : Program} {μ : Machine} {φ : Val → Prop}
+    (h : Machine.SafeTp prog μ φ) {k : Nat} {t : Thread}
+    (hk : μ.threads[k]? = some t) :
+    (∃ v, t.toValue = some v ∧ (k = 0 → φ v)) ∨ thread_reducible prog.procs μ.mem t :=
+  h 0 μ (.refl μ) k t hk
+
+/-- **Paper Lemma 12 (step closure).** Thread-pool safety is preserved
+by a single `Machine.Step`. -/
+theorem Machine.SafeTp.step_closed {prog : Program} {μ μ₂ : Machine}
+    {φ : Val → Prop} (h : Machine.SafeTp prog μ φ)
+    (hs : Machine.Step prog μ μ₂) :
+    Machine.SafeTp prog μ₂ φ :=
+  fun n μ' htr => h (n + 1) μ' (.step hs htr)
+
+/-! ### Bridge: per-state strong adequacy → pointwise SafeTp body
+
+The bridge converts the conjunction `(per-thread safety) ∧ (main-thread
+postcondition)` from `wp_strong_adequacy[_bupd]` into the per-index
+disjunction of `SafeTp`. The terminated-thread case uses
+`Thread.toValue`'s definition to read off the value (a terminated
+thread always has `toValue = some _`, with `result.getD .unit` as the
+fallthrough). -/
+
+private theorem mem_of_getElem?_some {α} :
+    ∀ (l : List α) (k : Nat) (a : α), l[k]? = some a → a ∈ l
+  | [], k, _, h => by cases k <;> cases h
+  | _ :: _, 0, _, h => by
+      simp at h; exact h ▸ List.mem_cons_self
+  | x :: xs, k+1, a, h => by
+      simp at h
+      exact List.mem_cons_of_mem _ (mem_of_getElem?_some xs k a h)
+
+private theorem Thread.toValue_of_terminated {t : Thread}
+    (h : t.terminated = true) : ∃ v, t.toValue = some v := by
+  obtain ⟨stmt, cont, env, stack, result⟩ := t
+  unfold Thread.terminated at h
+  unfold Thread.toValue
+  cases stmt <;> (try cases h)
+  all_goals (cases cont <;> (try cases h))
+  all_goals (cases stack <;> (try cases h))
+  exact ⟨_, rfl⟩
+
+private theorem cons_of_getElem?_zero {α} :
+    ∀ (l : List α) (a : α), l[0]? = some a → ∃ rest, l = a :: rest
+  | [], _, h => by cases h
+  | x :: xs, a, h => by
+      simp at h; exact ⟨xs, by rw [h]⟩
+
+/-- **Pointwise strong adequacy (bupd variant).** Per-index reformulation
+of `wp_strong_adequacy_bupd`: at any reachable `μ'`, any thread `t` at
+index `k` is a value (with `φ` if `k = 0`) or reducible. This is the
+load-bearing bridge into `Machine.safe`. -/
+theorem wp_strong_adequacy_bupd_pointwise
+    {GF : BundledGFunctors.{0,0,0}} [InvGpreS GF]
+    (p : Program) (φ : Val → Prop)
+    (H : ∀ [_LC : InvGS_gen false GF],
+         ⊢ |==> ∃ (_Hsi : StateInterp GF) (fork_post : IProp GF),
+             state_interp (GF := GF) Mem.empty ∗
+               wp p.procs fork_post CoPset.full (Thread.initial p.main)
+                 (fun v => iprop(⌜φ v⌝ : IProp GF)))
+    (n : Nat) (μ' : Machine)
+    (htr : Machine.StepStarN p n (Machine.initial p) μ')
+    (k : Nat) (t : Thread)
+    (hget : μ'.threads[k]? = some t) :
+    (∃ v, t.toValue = some v ∧ (k = 0 → φ v)) ∨ thread_reducible p.procs μ'.mem t := by
+  obtain ⟨hsafe, hmain⟩ := wp_strong_adequacy_bupd (GF := GF) p φ H n μ' htr
+  have hmem : t ∈ μ'.threads := mem_of_getElem?_some _ _ _ hget
+  rcases hsafe t hmem with hterm | hred
+  · left
+    obtain ⟨v, hvv⟩ := Thread.toValue_of_terminated hterm
+    refine ⟨v, hvv, ?_⟩
+    intro hk; subst hk
+    obtain ⟨rest, hts⟩ := cons_of_getElem?_zero _ _ hget
+    exact hmain t rest hts v hvv
+  · right; exact hred
+
+/-- Non-bupd variant for callers who can supply a closed `⊢ ∃ Hsi fp, …`. -/
+theorem wp_strong_adequacy_pointwise
+    {GF : BundledGFunctors.{0,0,0}} [InvGpreS GF]
+    (p : Program) (φ : Val → Prop)
+    (H : ∀ [_LC : InvGS_gen false GF],
+         ⊢ ∃ (_Hsi : StateInterp GF) (fork_post : IProp GF),
+             state_interp (GF := GF) Mem.empty ∗
+               wp p.procs fork_post CoPset.full (Thread.initial p.main)
+                 (fun v => iprop(⌜φ v⌝ : IProp GF)))
+    (n : Nat) (μ' : Machine)
+    (htr : Machine.StepStarN p n (Machine.initial p) μ')
+    (k : Nat) (t : Thread)
+    (hget : μ'.threads[k]? = some t) :
+    (∃ v, t.toValue = some v ∧ (k = 0 → φ v)) ∨ thread_reducible p.procs μ'.mem t := by
+  obtain ⟨hsafe, hmain⟩ := wp_strong_adequacy (GF := GF) p φ H n μ' htr
+  have hmem : t ∈ μ'.threads := mem_of_getElem?_some _ _ _ hget
+  rcases hsafe t hmem with hterm | hred
+  · left
+    obtain ⟨v, hvv⟩ := Thread.toValue_of_terminated hterm
+    refine ⟨v, hvv, ?_⟩
+    intro hk; subst hk
+    obtain ⟨rest, hts⟩ := cons_of_getElem?_zero _ _ hget
+    exact hmain t rest hts v hvv
+  · right; exact hred
+
+/-! ### Fused adequacy entry points → `Machine.safe`
+
+The `wp_strong_adequacy[_bupd]` theorems above return the *split*
+conjunction `(per-thread safety) ∧ (main-thread postcondition)` — the
+shape produced by `pool_safe ∗ pool_main_post`. The lemmas below fuse
+that split form into the paper's single disjunction `Machine.safe`,
+so client adequacy proofs never have to mention the split shape. -/
+
+/-- **Fused adequacy (bupd variant).** From a WP entailment, conclude
+`Machine.safe p φ` directly — no split conjunction, no `unfold`
+boilerplate. -/
+theorem wp_safe_bupd
+    {GF : BundledGFunctors.{0,0,0}} [InvGpreS GF]
+    (p : Program) {φ : Val → Prop}
+    (H : ∀ [_LC : InvGS_gen false GF],
+         ⊢ |==> ∃ (_Hsi : StateInterp GF) (fork_post : IProp GF),
+             state_interp (GF := GF) Mem.empty ∗
+               wp p.procs fork_post CoPset.full (Thread.initial p.main)
+                 (fun v => iprop(⌜φ v⌝ : IProp GF))) :
+    Machine.safe p φ := by
+  intro n μ' htr k t hget
+  exact wp_strong_adequacy_bupd_pointwise (GF := GF) p φ H n μ' htr k t hget
+
+/-- **Fused adequacy (non-bupd variant).** For callers who can supply a
+closed `⊢ ∃ Hsi fp, …` hypothesis (no ghost-state allocation needed). -/
+theorem wp_safe
+    {GF : BundledGFunctors.{0,0,0}} [InvGpreS GF]
+    (p : Program) {φ : Val → Prop}
+    (H : ∀ [_LC : InvGS_gen false GF],
+         ⊢ ∃ (_Hsi : StateInterp GF) (fork_post : IProp GF),
+             state_interp (GF := GF) Mem.empty ∗
+               wp p.procs fork_post CoPset.full (Thread.initial p.main)
+                 (fun v => iprop(⌜φ v⌝ : IProp GF))) :
+    Machine.safe p φ := by
+  intro n μ' htr k t hget
+  exact wp_strong_adequacy_pointwise (GF := GF) p φ H n μ' htr k t hget
 
 end Agar.Logic

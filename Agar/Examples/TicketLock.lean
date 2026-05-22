@@ -77,7 +77,7 @@ the body fires.
 
 ### What's verified
 
-`progTicketLock_closed : Machine.Adequate progTicketLock μ' (Val.int 1)`.
+`progTicketLock_closed : Machine.safe progTicketLock (· = Val.int 1)`.
 Safety + functional correctness: every terminating run returns
 `Val.int 1`, the post-release counter value. Every `cas`, `load`,
 `store` is discharged by a real Iris WP rule against a real
@@ -110,10 +110,8 @@ def progTicketLock : Program where
 theorem progTicketLock_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progTicketLock n
-            (Machine.initial progTicketLock) μ') :
-    Machine.Adequate progTicketLock μ' (Val.int 1) := by
+    :
+    Machine.safe progTicketLock (· = (Val.int 1)) := by
   adequacy_with_heap_intro progTicketLock (Val.int 1)
   wp_pures
   wp_alloc_intro lNext HPnext

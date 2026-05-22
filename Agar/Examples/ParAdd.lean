@@ -96,9 +96,8 @@ conjunction routes HA and HB to disjoint forked threads. -/
 theorem progParAdd_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progParAdd n (Machine.initial progParAdd) μ') :
-    Machine.Adequate progParAdd μ' Val.unit := by
+    :
+    Machine.safe progParAdd (· = Val.unit) := by
   adequacy_with_heap_intro progParAdd Val.unit
   wp_pures
   wp_alloc_intro HA

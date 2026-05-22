@@ -55,10 +55,8 @@ def progSpinFlag : Program where
 theorem progSpinFlag_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progSpinFlag n
-            (Machine.initial progSpinFlag) μ') :
-    Machine.Adequate progSpinFlag μ' Val.unit := by
+    :
+    Machine.safe progSpinFlag (· = Val.unit) := by
   adequacy_with_heap_intro progSpinFlag Val.unit
   wp_pures
   wp_alloc_intro HP
@@ -117,10 +115,8 @@ def progChanSpin : Program where
 theorem progChanSpin_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progChanSpin n
-            (Machine.initial progChanSpin) μ') :
-    Machine.Adequate progChanSpin μ' Val.unit := by
+    :
+    Machine.safe progChanSpin (· = Val.unit) := by
   adequacy_with_heap_intro progChanSpin Val.unit
   wp_pures
   wp_alloc_intro HP
@@ -228,10 +224,8 @@ def progCasRetry : Program where
 theorem progCasRetry_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCasRetry n
-            (Machine.initial progCasRetry) μ') :
-    Machine.Adequate progCasRetry μ' Val.unit := by
+    :
+    Machine.safe progCasRetry (· = Val.unit) := by
   adequacy_with_heap_intro progCasRetry Val.unit
   wp_pures
   wp_alloc_intro HP

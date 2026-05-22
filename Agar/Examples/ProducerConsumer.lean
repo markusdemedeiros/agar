@@ -133,10 +133,8 @@ thread returns `Val.unit`. -/
 theorem progProdCon_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progProdCon n
-            (Machine.initial progProdCon) μ') :
-    Machine.Adequate progProdCon μ' Val.unit := by
+    :
+    Machine.safe progProdCon (· = Val.unit) := by
   adequacy_with_heap_intro progProdCon Val.unit
   wp_pures
   wp_alloc_intro sLoc' HPS                      -- HPS : sLoc' ↦ 0
@@ -185,10 +183,8 @@ def progProdConRace : Program where
 theorem progProdConRace_closedP
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progProdConRace n
-            (Machine.initial progProdConRace) μ') :
-    Machine.AdequateP progProdConRace μ'
+    :
+    Machine.safe progProdConRace
       (fun v => v = Val.int 0 ∨ v = Val.int 42) := by
   adequacy_with_heap_intro_P progProdConRace
     (fun v => v = Val.int 0 ∨ v = Val.int 42)

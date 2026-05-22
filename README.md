@@ -20,7 +20,7 @@ program logic, verified end-to-end in Lean 4.
 * Worked verification examples: counter (CAS+ghost RA), one-slot
   producer/consumer, fork+disjoint-heap, mutex, spinlock, ticket lock,
   Treiber stack, 3-element insertion sort — each closed via
-  `Machine.Adequate`.
+  `Machine.safe`.
 
 
 ## Layout

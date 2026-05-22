@@ -297,4 +297,301 @@ theorem reverseProc_wp_body
   · iexact HL
   unfold llist; ipure_intro; rfl
 
+/-! # Treiber stacks: predicate + push/pop specs + two-stack reversal
+
+The development above destructively reuses the *nodes* of the input
+list. A genuine Treiber-stack implementation has each operation go
+through a stable head-pointer cell `stk : Loc` that always holds the
+current head value. `tstack xs stk` packages the head cell with the
+underlying chain. Push and pop are stand-alone procedures with
+modular specs; the reversal driver pops from one stack and pushes onto
+the other, never inspecting the chain directly. -/
+
+/-- Treiber-stack representation: the head-pointer cell at `stk`
+holds some value `hv` for which the chain ownership `llist xs hv`
+is held. -/
+@[reducible] def tstack (xs : List Int) (stk : Loc) : IProp GF :=
+  iprop(∃ hv : Val, points_to (GF := GF) (F := F) stk hv ∗ term(llist xs hv))
+
+/-! ## `pushProc` — top-of-stack push -/
+
+def pushProc : Proc where
+  params := ["stk", "v"]
+  body := ags(
+    old := load stk ;
+    new := alloc #(lnodeExpr (Expr.var "v") (Expr.var "old")) ;
+    store stk new
+  )
+
+theorem pushProc_wp_body
+    (procs : Name → Option Proc) (xs : List Int) (stk : Loc) (v : Int) :
+    tstack (GF := GF) (F := F) xs stk ⊢
+      wp (GF := GF) procs iprop(emp : IProp GF) CoPset.full
+        ⟨pushProc.body, [],
+          bindParams pushProc.params [Val.loc stk, Val.int v],
+          [], none⟩
+        (fun _ => tstack (GF := GF) (F := F) (v :: xs) stk) := by
+  istart
+  iintro HS
+  icases HS with ⟨%hv, HP, HL⟩
+  unfold pushProc
+  wp_lstep
+  wp_load_keep HP
+  wp_lstep
+  wp_lstep
+  iapply wp_alloc (heval := by simp [agar_eval, lnodeExpr]; rfl)
+  iintro !> %lNew HNew
+  wp_lstep
+  iapply wp_store (GF := GF) (F := F) (l := stk) (v := Val.loc lNew)
+    (heL := by simp [agar_eval])
+    (heV := by simp [agar_eval])
+  iframe HP
+  iintro !> HP
+  iapply (wp_value _ _ _ Val.unit _ rfl)
+  iexists (Val.loc lNew)
+  isplitl [HP]
+  · iexact HP
+  iexists lNew
+  isplitr
+  · ipure_intro; rfl
+  iexists hv
+  isplitl [HNew]
+  · iexact HNew
+  iexact HL
+
+/-! ## `popProc` — top-of-stack pop
+
+Precondition requires the stack to be non-empty (`tstack (x :: xs) stk`).
+Returns `Val.int x` and leaves the stack at `tstack xs stk`. -/
+
+def popProc : Proc where
+  params := ["stk"]
+  body := ags(
+    top := load stk ;
+    s   := load top ;
+    v   := #(Expr.proj (Expr.var "s") "v") ;
+    nx  := #(Expr.proj (Expr.var "s") "nx") ;
+    store stk nx ;
+    free top ;
+    return v
+  )
+
+theorem popProc_wp_body
+    (procs : Name → Option Proc) (x : Int) (xs : List Int) (stk : Loc) :
+    tstack (GF := GF) (F := F) (x :: xs) stk ⊢
+      wp (GF := GF) procs iprop(emp : IProp GF) CoPset.full
+        ⟨popProc.body, [],
+          bindParams popProc.params [Val.loc stk],
+          [], none⟩
+        (fun r => iprop(⌜r = Val.int x⌝ ∗
+          term(tstack (GF := GF) (F := F) xs stk))) := by
+  istart
+  iintro HS
+  icases HS with ⟨%hv, HP, HL⟩
+  -- llist (x :: xs) hv unfolds to: ∃ l, hv = Val.loc l ∗ ∃ nx, l ↦ struct ∗ llist xs nx.
+  icases HL with ⟨%l, %hhv, %nx, HC, HT⟩
+  subst hhv
+  unfold popProc
+  wp_lstep
+  wp_load_keep HP
+  wp_lstep
+  wp_lstep
+  wp_load_keep HC
+  wp_assign_simp
+  wp_assign_simp
+  wp_lstep
+  wp_lstep
+  iapply wp_store (GF := GF) (F := F) (l := stk) (v := nx)
+    (heL := by simp [agar_eval])
+    (heV := by simp [agar_eval])
+  iframe HP
+  iintro !> HP
+  wp_lstep
+  wp_lstep
+  iapply wp_free (GF := GF) (F := F) (l := l)
+    (heval := by simp [agar_eval])
+  iframe HC
+  iintro !>
+  wp_lstep
+  iapply (wp_ret_top _ _ (Expr.var "v") (Val.int x) [] _ _
+    (heval := by simp [agar_eval]))
+  isplitr
+  · ipure_intro; rfl
+  iexists nx
+  isplitl [HP]
+  · iexact HP
+  iexact HT
+
+/-! ## Call-level specs
+
+Lift `pushProc_wp_body` and `popProc_wp_body` to call sites: at a
+`.call x procName [args]` thread state, given the input ownership and
+a continuation wand over the output ownership, derive the at-call WP. -/
+
+/-- Post-call thread state for `pushProc`: the call's return binder `x`
+gets `Val.unit` (push falls through), caller's `cont`/`stack` resume. -/
+def pushProc_post (x : Name) (cont : List Stmt) (env : Env)
+    (stack : List Frame) : Thread :=
+  let env' : Env := env.set x Val.unit
+  match cont with
+  | []      => ⟨.skip, [], env', stack, none⟩
+  | s :: cs => ⟨s,     cs, env', stack, none⟩
+
+/-- An empty Treiber stack is just a head cell holding the sentinel `0`.
+Convenient for closed examples that allocate a fresh head and need
+`tstack [] stk` as a precondition. -/
+theorem tstack_nil_intro (stk : Loc) :
+    points_to (GF := GF) (F := F) stk (Val.int 0) ⊢
+      tstack (GF := GF) (F := F) [] stk := by
+  istart
+  iintro HP
+  iexists (Val.int 0); isplitl [HP]
+  · iexact HP
+  unfold llist; ipure_intro; rfl
+
+theorem pushProc_spec
+    (procs : Name → Option Proc) (fork_post : IProp GF)
+    (hproc : procs "pushProc" = some pushProc)
+    (Φ : Val → IProp GF) (xs : List Int) (stk : Loc) (v : Int)
+    (x : Name) (eStk eV : Expr) (cont : List Stmt) (env : Env)
+    (stack : List Frame)
+    (hStk : Expr.eval env eStk = some (Val.loc stk))
+    (hV   : Expr.eval env eV  = some (Val.int v)) :
+    tstack (GF := GF) (F := F) xs stk ∗
+      (tstack (GF := GF) (F := F) (v :: xs) stk -∗
+        wp (GF := GF) procs fork_post CoPset.full
+          (pushProc_post x cont env stack) Φ)
+    ⊢ wp (GF := GF) procs fork_post CoPset.full
+        ⟨.call x "pushProc" [eStk, eV], cont, env, stack, none⟩ Φ := by
+  istart
+  iintro ⟨HS, HK⟩
+  have hargs : evalArgs env [eStk, eV] = some [Val.loc stk, Val.int v] := by
+    simp [agar_eval, hStk, hV]
+  have harity : ([Val.loc stk, Val.int v]).length = pushProc.params.length := rfl
+  iapply (wp_call procs fork_post x "pushProc" [eStk, eV] pushProc
+    [Val.loc stk, Val.int v] cont env stack Φ hproc hargs harity)
+  iintro !>
+  icases HS with ⟨%hv, HP, HL⟩
+  unfold pushProc
+  wp_lstep
+  wp_load_keep HP
+  wp_lstep
+  wp_lstep
+  iapply wp_alloc (heval := by simp [agar_eval, lnodeExpr]; rfl)
+  iintro !> %lNew HNew
+  wp_lstep
+  iapply wp_store (GF := GF) (F := F) (l := stk) (v := Val.loc lNew)
+    (heL := by simp [agar_eval])
+    (heV := by simp [agar_eval])
+  iframe HP
+  iintro !> HP
+  -- Pop the caller's frame to land in `pushProc_post`.
+  unfold pushProc_post
+  cases hcont : cont with
+  | nil =>
+    iapply wp_skip_frame_nil
+    iintro !>
+    iapply HK
+    iexists (Val.loc lNew)
+    isplitl [HP]
+    · iexact HP
+    iexists lNew
+    isplitr
+    · ipure_intro; rfl
+    iexists hv
+    isplitl [HNew]
+    · iexact HNew
+    iexact HL
+  | cons s cs =>
+    iapply wp_skip_frame_cons
+    iintro !>
+    iapply HK
+    iexists (Val.loc lNew)
+    isplitl [HP]
+    · iexact HP
+    iexists lNew
+    isplitr
+    · ipure_intro; rfl
+    iexists hv
+    isplitl [HNew]
+    · iexact HNew
+    iexact HL
+
+/-- Post-call thread state for `popProc`: the call's return binder `x`
+receives `Val.int popped_value`, caller's `cont`/`stack` resume. -/
+def popProc_post (x : Name) (popped : Int) (cont : List Stmt) (env : Env)
+    (stack : List Frame) : Thread :=
+  let env' : Env := env.set x (Val.int popped)
+  match cont with
+  | []      => ⟨.skip, [], env', stack, none⟩
+  | s :: cs => ⟨s,     cs, env', stack, none⟩
+
+theorem popProc_spec
+    (procs : Name → Option Proc) (fork_post : IProp GF)
+    (hproc : procs "popProc" = some popProc)
+    (Φ : Val → IProp GF) (x : Name) (eStk : Expr) (cont : List Stmt)
+    (env : Env) (stack : List Frame) (popped : Int) (xs : List Int)
+    (stk : Loc)
+    (hStk : Expr.eval env eStk = some (Val.loc stk)) :
+    tstack (GF := GF) (F := F) (popped :: xs) stk ∗
+      (tstack (GF := GF) (F := F) xs stk -∗
+        wp (GF := GF) procs fork_post CoPset.full
+          (popProc_post x popped cont env stack) Φ)
+    ⊢ wp (GF := GF) procs fork_post CoPset.full
+        ⟨.call x "popProc" [eStk], cont, env, stack, none⟩ Φ := by
+  istart
+  iintro ⟨HS, HK⟩
+  have hargs : evalArgs env [eStk] = some [Val.loc stk] := by
+    simp [agar_eval, hStk]
+  have harity : ([Val.loc stk]).length = popProc.params.length := rfl
+  iapply (wp_call procs fork_post x "popProc" [eStk] popProc
+    [Val.loc stk] cont env stack Φ hproc hargs harity)
+  iintro !>
+  icases HS with ⟨%hv, HP, HL⟩
+  icases HL with ⟨%l, %hhv, %nx, HC, HT⟩
+  subst hhv
+  unfold popProc
+  wp_lstep
+  wp_load_keep HP
+  wp_lstep
+  wp_lstep
+  wp_load_keep HC
+  wp_assign_simp
+  wp_assign_simp
+  wp_lstep
+  wp_lstep
+  iapply wp_store (GF := GF) (F := F) (l := stk) (v := nx)
+    (heL := by simp [agar_eval])
+    (heV := by simp [agar_eval])
+  iframe HP
+  iintro !> HP
+  wp_lstep
+  wp_lstep
+  iapply wp_free (GF := GF) (F := F) (l := l)
+    (heval := by simp [agar_eval])
+  iframe HC
+  iintro !>
+  wp_lstep
+  -- Body's `return v` pops the caller's frame and binds `x` in caller's env.
+  unfold popProc_post
+  cases hcont : cont with
+  | nil =>
+    iapply (wp_ret_pop_nil _ _ (Expr.var "v") (Val.int popped) [] _ _ _ _ _
+      (heval := by simp [agar_eval]))
+    iintro !>
+    iapply HK
+    iexists nx
+    isplitl [HP]
+    · iexact HP
+    iexact HT
+  | cons s cs =>
+    iapply (wp_ret_pop_cons _ _ (Expr.var "v") (Val.int popped) [] _ _ _ _ _ _ _
+      (heval := by simp [agar_eval]))
+    iintro !>
+    iapply HK
+    iexists nx
+    isplitl [HP]
+    · iexact HP
+    iexact HT
+
 end Agar.Logic

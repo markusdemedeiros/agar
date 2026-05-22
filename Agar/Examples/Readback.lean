@@ -78,10 +78,8 @@ heap value to the {0, 42} set across the write. -/
 theorem progReadback_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progReadback n
-            (Machine.initial progReadback) μ') :
-    Machine.Adequate progReadback μ' (Val.int 42) := by
+    :
+    Machine.safe progReadback (· = (Val.int 42)) := by
   adequacy_with_heap_intro progReadback (Val.int 42)
   wp_pures
   wp_alloc_intro l HP
@@ -215,8 +213,8 @@ theorem progReadback_closed
 Sibling program that drops the spin-readback. Main forks the producer
 and reads the flag exactly once. The observed value depends on whether
 the producer's `store flag 42` has fired yet, so the result is a *set*
-`{0, 42}`. This is what `Machine.AdequateP` captures that
-`Machine.Adequate` cannot — a postcondition that ranges over a property
+`{0, 42}`. This is what `Machine.safe`-with-predicate captures that
+`Machine.safe`-with-equality cannot — a postcondition that ranges over a property
 rather than pinning to a single value. -/
 
 def progReadbackRace : Program where
@@ -232,10 +230,8 @@ def progReadbackRace : Program where
 theorem progReadbackRace_closedP
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progReadbackRace n
-            (Machine.initial progReadbackRace) μ') :
-    Machine.AdequateP progReadbackRace μ'
+    :
+    Machine.safe progReadbackRace
       (fun v => v = Val.int 0 ∨ v = Val.int 42) := by
   adequacy_with_heap_intro_P progReadbackRace
     (fun v => v = Val.int 0 ∨ v = Val.int 42)

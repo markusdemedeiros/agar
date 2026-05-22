@@ -207,10 +207,8 @@ private theorem petersonProc_wp_body
 theorem progPeterson_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progPeterson n
-            (Machine.initial progPeterson) μ') :
-    Machine.Adequate progPeterson μ' Val.unit := by
+    :
+    Machine.safe progPeterson (· = Val.unit) := by
   adequacy_with_heap_intro progPeterson Val.unit
   wp_pures                                      -- wp_seq
   wp_alloc_intro HP0                            -- HP0 : f0Loc ↦ 0

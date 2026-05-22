@@ -65,13 +65,9 @@ def progSkip : Program where
 `wp_strong_adequacy`. Pure-Lean conclusion, no Iris-level
 proposition leaks. -/
 theorem progSkip_closed
-    {GF : BundledGFunctors.{0,0,0}} [InvGpreS GF]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progSkip n (Machine.initial progSkip) μ') :
-    Machine.Adequate progSkip μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy (GF := GF)
-    (φ := fun v => v = Val.unit) progSkip ?_ n μ' htr
+    {GF : BundledGFunctors.{0,0,0}} [InvGpreS GF] :
+    Machine.safe progSkip (· = Val.unit) := by
+  refine wp_safe (GF := GF) progSkip ?_
   intro _LC
   letI SI : StateInterp GF := ⟨fun _ => iprop(emp)⟩
   refine BI.exists_intro' SI ?_
@@ -99,12 +95,9 @@ def progAlloc1 : Program where
 theorem progAlloc1_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progAlloc1 n (Machine.initial progAlloc1) μ') :
-    Machine.Adequate progAlloc1 μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progAlloc1 ?_ n μ' htr
+    :
+    Machine.safe progAlloc1 (· = Val.unit) := by
+  refine wp_safe_bupd (GF := GF) progAlloc1 ?_
   intro _LC
   heap_adequacy_intro progAlloc1
   wp_alloc_intro _Hpt
@@ -125,10 +118,8 @@ def progAllocLoadFree : Program where
 theorem progAllocLoadFree_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progAllocLoadFree n
-            (Machine.initial progAllocLoadFree) μ') :
-    Machine.Adequate progAllocLoadFree μ' (Val.int 7) := by
+    :
+    Machine.safe progAllocLoadFree (· = (Val.int 7)) := by
   adequacy_with_heap_intro progAllocLoadFree (Val.int 7)
   wp_steps
   wp_alloc_intro HP
@@ -145,10 +136,8 @@ theorem progAllocLoadFree_closed
 theorem progSwap_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN Examples.progSwap n
-            (Machine.initial Examples.progSwap) μ') :
-    Machine.Adequate Examples.progSwap μ' Val.unit := by
+    :
+    Machine.safe Examples.progSwap (· = Val.unit) := by
   adequacy_with_heap_intro Examples.progSwap Val.unit
   wp_steps
   wp_alloc_intro HP              -- p ↦ 1
@@ -185,10 +174,8 @@ def progCasOnce : Program where
 theorem progCasOnce_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCasOnce n
-            (Machine.initial progCasOnce) μ') :
-    Machine.Adequate progCasOnce μ' (Val.int 7) := by
+    :
+    Machine.safe progCasOnce (· = (Val.int 7)) := by
   adequacy_with_heap_intro progCasOnce (Val.int 7)
   wp_steps
   wp_alloc_intro HP
@@ -219,10 +206,8 @@ def progCallSeven : Program where
 theorem progCallSeven_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCallSeven n
-            (Machine.initial progCallSeven) μ') :
-    Machine.Adequate progCallSeven μ' (Val.int 7) := by
+    :
+    Machine.safe progCallSeven (· = (Val.int 7)) := by
   adequacy_with_heap_intro progCallSeven (Val.int 7)
   wp_call_pure seven
 
@@ -243,10 +228,8 @@ def progCallAdd : Program where
 theorem progCallAdd_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN progCallAdd n
-            (Machine.initial progCallAdd) μ') :
-    Machine.Adequate progCallAdd μ' (Val.int 7) := by
+    :
+    Machine.safe progCallAdd (· = (Val.int 7)) := by
   adequacy_with_heap_intro progCallAdd (Val.int 7)
   wp_call_pure addProc
 

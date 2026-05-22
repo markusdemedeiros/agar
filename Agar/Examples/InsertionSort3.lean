@@ -309,13 +309,9 @@ is terminated or reducible, and a terminated main thread returns
 theorem progIsort3_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (v1 v2 v3 : Int) (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN (progIsort3 v1 v2 v3) n
-            (Machine.initial (progIsort3 v1 v2 v3)) μ') :
-    Machine.Adequate (progIsort3 v1 v2 v3) μ' (Val.int (med3 v1 v2 v3)) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int (med3 v1 v2 v3)) (progIsort3 v1 v2 v3) ?_ n μ' htr
+    (v1 v2 v3 : Int) :
+    Machine.safe (progIsort3 v1 v2 v3) (· = Val.int (med3 v1 v2 v3)) := by
+  refine wp_safe_bupd (GF := GF) (progIsort3 v1 v2 v3) ?_
   intro _LC
   imod (heap_init (GF := GF) (F := F)) with ⟨%G, HA0⟩
   imodintro
@@ -366,7 +362,7 @@ theorem progIsort3_closed
     rcases Int.le_total v1 v2 with hab | hab <;>
       rcases Int.le_total v2 v3 with hbc | hbc <;>
       rcases Int.le_total v1 v3 with hac | hac <;>
-      simp [Int.min_def, Int.max_def, hab, hbc, hac] <;> omega
+      simp [Int.min_def, Int.max_def, hab, hbc] <;> omega
   have hMed : max (min v1 v2) (min (max v1 v2) v3) = med3 v1 v2 v3 := by
     simp only [med3, min3, max3]
     rcases Int.le_total v1 v2 with hab | hab <;>
@@ -378,7 +374,7 @@ theorem progIsort3_closed
     rcases Int.le_total v1 v2 with hab | hab <;>
       rcases Int.le_total v2 v3 with hbc | hbc <;>
       rcases Int.le_total v1 v3 with hac | hac <;>
-      simp [Int.min_def, Int.max_def, hab, hbc, hac] <;> omega
+      simp [Int.max_def, hab, hbc, hac] <;> omega
   wp_pures
   iapply wp_load _ _ _ _ _ (Val.int (med3 v1 v2 v3)) _ _ _ _ (by agar_eval)
   isplitl [HB]
@@ -420,13 +416,11 @@ the sortedness witness. Every terminated main thread of
 theorem progIsort3_sorted
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
-    (v1 v2 v3 : Int) (n : Nat) (μ' : Machine)
-    (htr : Machine.StepStarN (progIsort3 v1 v2 v3) n
-            (Machine.initial (progIsort3 v1 v2 v3)) μ') :
-    Machine.Adequate (progIsort3 v1 v2 v3) μ' (Val.int (med3 v1 v2 v3)) ∧
+    (v1 v2 v3 : Int) :
+    Machine.safe (progIsort3 v1 v2 v3) (· = Val.int (med3 v1 v2 v3)) ∧
       (min3 v1 v2 v3 ≤ med3 v1 v2 v3 ∧ med3 v1 v2 v3 ≤ max3 v1 v2 v3) ∧
       min3 v1 v2 v3 + med3 v1 v2 v3 + max3 v1 v2 v3 = v1 + v2 + v3 :=
-  ⟨progIsort3_closed (GF := GF) (F := F) v1 v2 v3 n μ' htr,
+  ⟨progIsort3_closed (GF := GF) (F := F) v1 v2 v3,
     isort3_sorted v1 v2 v3, isort3_sum v1 v2 v3⟩
 
 end Agar.Logic

@@ -593,7 +593,7 @@ theorem denote_none_stuck (s : PureStmt) :
         exact ⟨t_stk, .step step₁ hst, hsk, hne⟩
       · rename_i hb
         refine ⟨mkT (.ite e (embed s₁) (embed s₂)) cs ρ, .refl, ?_, ?_⟩
-        · simp [pstuck, mkT_ite_step, hb]
+        · simp [pstuck, mkT_ite_step]
         · simp [mkT]
   | «repeat» n s ih =>
       show ∀ cs ρ r, iter (denote s) n ρ = (none, r) →
