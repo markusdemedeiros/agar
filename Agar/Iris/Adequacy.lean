@@ -736,4 +736,24 @@ main-thread postcondition. This is the canonical conclusion of every
 def Machine.Adequate (prog : Program) (μ : Machine) (v : Val) : Prop :=
   Machine.Safe prog.procs μ ∧ Machine.MainReturns μ v
 
+/-- **Predicate-form main postcondition.** Like `MainReturns` but the
+returned value satisfies an arbitrary property `φ` rather than equalling
+a fixed `v`. -/
+def Machine.MainReturnsP (μ : Machine) (φ : Val → Prop) : Prop :=
+  ∀ (th : Thread) (rest : List Thread), μ.threads = th :: rest →
+    ∀ v', th.toValue = some v' → φ v'
+
+/-- **Predicate-form combined adequacy.** Safety plus a propositional
+postcondition `φ`. Strictly more expressive than `Adequate` (which is
+the special case `φ := (· = v)`); supports specs like "result is one of
+{0, 1}" that capture concurrent nondeterminism. -/
+def Machine.AdequateP (prog : Program) (μ : Machine) (φ : Val → Prop) : Prop :=
+  Machine.Safe prog.procs μ ∧ Machine.MainReturnsP μ φ
+
+/-- `Adequate prog μ v` is the special case of `AdequateP` for the
+equality predicate. -/
+theorem Machine.Adequate_iff_AdequateP {prog : Program} {μ : Machine} {v : Val} :
+    Machine.Adequate prog μ v ↔ Machine.AdequateP prog μ (· = v) := by
+  rfl
+
 end Agar.Logic

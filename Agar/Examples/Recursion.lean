@@ -109,8 +109,8 @@ theorem factProc_spec_gen
     ⦃ ▷ wp procs fork_post E (factProc_post n x cont env stack) Φ ⦄
     (⟨.call x "fact" [eN], cont, env, stack, none⟩ : Thread)
     ⦃ Φ ⦄ := by
-  -- Bundle into iProp with eN, hN, n, x, cont, env, stack quantified.
-  -- Keep `procs`, `fork_post`, `E`, `hproc`, `Φ` fixed across the recursion.
+  -- Universally quantify (n, x, eN, cont, env, stack) inside the iProp so
+  -- Löb induction threads them through the recursive call.
   suffices key :
       ⊢ (iprop(∀ (n : Nat) (x : Name) (eN : Expr) (cont : List Stmt)
                 (env : Env) (stack : List Frame),
@@ -118,8 +118,6 @@ theorem factProc_spec_gen
           (▷ wp procs fork_post E (factProc_post n x cont env stack) Φ) -∗
           wp procs fork_post E
             ⟨.call x "fact" [eN], cont, env, stack, none⟩ Φ) : IProp GF) by
-    -- Specialize inside the proofmode: derive the wand `▷ wp(post) -∗ wp(call)`
-    -- as a `True`-entailment, then use `wand_entails`.
     have step : (True : IProp GF) ⊢
         iprop((▷ wp procs fork_post E (factProc_post n x cont env stack) Φ) -∗
               wp procs fork_post E
@@ -131,23 +129,19 @@ theorem factProc_spec_gen
     exact BI.wand_entails (BI.true_intro.trans step)
   iloeb as HIH
   iintro %n %x %eN %cont %env %stack %hN HK
-  -- Outer call: discharge with `wp_call`.
   have hargs : evalArgs env [eN] = some [.int (n : Int)] := by
     simp [agar_eval, hN]
   have harity : ([Val.int (n : Int)]).length = Examples.fact.params.length := rfl
   iapply (wp_call procs fork_post x "fact" [eN]
             Examples.fact [.int (n : Int)] cont env stack Φ hproc hargs harity)
-  -- Strip later — also strips ▷ from HIH and HK.
   iintro !>
   simp only [Examples.fact]
-  -- Useful eval facts under the body's bound env `bindParams ["n"] [Val.int n]`.
   have hOne : ∀ ρ : Env, Expr.eval ρ (age(1)) = some (.int 1) := fun _ => rfl
   have hGuard : Expr.eval (bindParams ["n"] [Val.int (n : Int)])
                 (age(n < 1)) = some (.bool (decide ((n : Int) < 1))) := by
     simp [agar_eval]
-  -- Case split on `n < 1`.
   by_cases hlt : (n : Int) < 1
-  · -- Base case: `n = 0`.
+  · -- Base case: n = 0, factorial = 1.
     have hn0 : n = 0 := by omega
     subst hn0
     have hGuardT : Expr.eval (bindParams ["n"] [Val.int ((0:Nat) : Int)])
@@ -168,14 +162,13 @@ theorem factProc_spec_gen
       unfold factProc_post
       simp [factorial]
       iexact HK
-  · -- Recursive case: `n ≥ 1`.
+  · -- Recursive case: n ≥ 1, factorial = n * (n-1)!.
     have hn_pos : n ≥ 1 := by omega
     have hGuardF : Expr.eval (bindParams ["n"] [Val.int (n : Int)])
                      (age(n < 1)) = some (.bool false) := by
       rw [hGuard]; simp [hlt]
     iapply wp_ite_false (heval := hGuardF)
     wp_pures
-    -- Inner call argument: `age(n - 1)`, evaluates to `Val.int ((n-1 : Nat) : Int)`.
     have hSubNat : Expr.eval (bindParams ["n"] [Val.int (n : Int)])
                      (age(n - 1)) = some (.int (((n - 1 : Nat)) : Int)) := by
       have : Expr.eval (bindParams ["n"] [Val.int (n : Int)]) (age(n - 1))
@@ -183,21 +176,16 @@ theorem factProc_spec_gen
         simp [agar_eval]
       rw [this]
       have hcast : ((n - 1 : Nat) : Int) = (n : Int) - 1 := by
-        have := Nat.sub_add_cancel hn_pos  -- (n-1) + 1 = n
+        have := Nat.sub_add_cancel hn_pos
         omega
       rw [hcast]
-    -- Apply the IH at (n-1, "r", age(n-1), [return n*r], envB, ⟨x,cont,env⟩::stack).
     wp_apply HIH $$ %(n - 1) %"r" %(age(n - 1)) %([ags(return n * r)])
                   %(bindParams ["n"] [Val.int (n : Int)])
                   %(⟨x, cont, env⟩ :: stack)
                   %hSubNat
     iintro !>
-    -- factProc_post (n-1) "r" [return n*r] envB (⟨x,cont,env⟩::stack)
-    --  = ⟨return n*r, [], envB.set "r" (.int ((n-1)!)), ⟨x,cont,env⟩::stack, none⟩
     unfold factProc_post
     simp
-    -- Step `return n*r`: pops the frame ⟨x, cont, env⟩, evaluating n*r
-    -- in envB.set "r" (.int ((n-1)!)). The product is n * (n-1)! = n!.
     have hMul : Expr.eval
         ((bindParams ["n"] [Val.int (n : Int)]).set "r"
             (.int ((factorial (n - 1 : Nat) : Int))))
@@ -211,17 +199,14 @@ theorem factProc_spec_gen
         simp [agar_eval]
       rw [hstep]
       congr 1
-      -- n * (n-1)! = n!
       have hfact : factorial n = n * factorial (n - 1) := by
         have hn_eq : n = (n - 1) + 1 := (Nat.sub_add_cancel hn_pos).symm
         rw [hn_eq, factorial]
         simp
       rw [hfact]; push_cast; rfl
-    -- Split on the outer caller's continuation; HK matches by iota-reduction.
     rcases hcont : cont with _ | ⟨s, cs⟩
     · iapply wp_ret_pop_nil (heval := hMul)
       iintro !>
-      -- HK : wp (match [] with | [] => skip-thread | _ => ...) reduces by iota
       iexact HK
     · iapply wp_ret_pop_cons (heval := hMul)
       iintro !>
@@ -261,22 +246,13 @@ theorem fact_3_closed
     (n : Nat) (μ' : Machine)
     (htr : Machine.StepStarN progFact3 n (Machine.initial progFact3) μ') :
     Machine.Adequate progFact3 μ' (Val.int 6) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 6) progFact3 ?_ n μ' htr
-  start_closed_proof_with_heap progFact3
-  -- main = (v := call fact(3)) ; return v
-  wp_step                     -- wp_seq
-  iintro !>
-  -- Apply the universal Löb spec at n=3, x="v", cont=[return v].
-  -- Note: we pass the literal `procs` lambda (matching the unfolded goal)
-  -- and η-expanded Φ so `iapply`'s unifier accepts both.
+  adequacy_with_heap_intro progFact3 (Val.int 6)
+  wp_pures
   wp_apply_gen_call_spec factProc_spec_gen
     (fun n => if n = "fact" then some Examples.fact else none)
     (fun v => iprop(⌜(fun w : Val => w = Val.int 6) v⌝))
     3 "v" (age(3)) [ags(return v)] Env.empty []
   iintro !>
-  -- Post-thread: ⟨return v, [], Env.empty.set "v" (.int 6), [], none⟩.
   unfold factProc_post
   simp only [show factorial 3 = 6 from rfl]
   wp_steps
@@ -296,17 +272,12 @@ theorem progFact_closed
     (htr : Machine.StepStarN Examples.progFact n
             (Machine.initial Examples.progFact) μ') :
     Machine.Adequate Examples.progFact μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) Examples.progFact ?_ n μ' htr
-  start_closed_proof_with_heap Examples.progFact
-  -- main = (r := call fact(5)) with empty continuation.
+  adequacy_with_heap_intro Examples.progFact Val.unit
   wp_apply_gen_call_spec factProc_spec_gen
     (Examples.procTable [("fact", Examples.fact)])
     (fun v => iprop(⌜(fun w : Val => w = Val.unit) v⌝))
     5 "r" (age(5)) [] Env.empty []
   iintro !>
-  -- Post-thread: ⟨skip, [], Env.empty.set "r" (.int 120), [], none⟩.
   unfold factProc_post
   wp_done
 

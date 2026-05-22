@@ -15,6 +15,7 @@ public import Agar.Iris.Rules
 public import Agar.Iris.Heap
 public import Agar.Iris.Adequacy
 public import Agar.Iris.Tactics
+public import Agar.Iris.TacticsAtomic
 public import Agar.Iris.WpSpin
 
 @[expose] public section
@@ -99,38 +100,22 @@ private theorem petersonProc_wp_body
   istart
   iintro ⟨#HIm, #HIo, #HIt⟩
   unfold petersonProc
-  -- Body sequencing: store myF 1 ; store t oId ; done := 0 ; while ... ; store myF 0
-  -- 1. store myF 1
-  wp_step                                       -- wp_seq
-  iintro !>
+  -- store myF 1
+  wp_pures
   iapply wp_store_inv (GF := GF) (F := F) (N := nroot)
     (Hsub := by rw [nclose_root])
     (heL := by agar_eval) (heV := by agar_eval)
   iframe HIm
   iintro !>
-  -- 2. store t oId
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq
-  iintro !>
+  -- store t oId
+  wp_pures
   iapply wp_store_inv (GF := GF) (F := F) (N := nroot)
     (Hsub := by rw [nclose_root])
     (heL := by agar_eval) (heV := by agar_eval)
   iframe HIt
   iintro !>
-  -- 3. done := 0
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_step                                       -- wp_assign
-  iintro !>
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq (expose `while`; cont gets `store myF 0`)
-  iintro !>
-  -- 4. while done = 0 do (f := load oF ; if f = 0 then done := 1 else skip)
-  -- Goal: wp ⟨whileDo (done=0) body, [store myF 0], env_loop, [], none⟩.
+  -- done := 0, then spin while done = 0 do (load oF, branch).
+  wp_pures_no_loop
   iapply (wp_spin (GF := GF) _ _ _ _ _ _ _
     (J := fun env =>
       iprop(inv nroot (∃ v : Val, points_to (GF := GF) (F := F) myFLoc v) ∗
@@ -149,11 +134,10 @@ private theorem petersonProc_wp_body
     obtain ⟨hev, hoF, hmyF⟩ := hpure
     cases b with
     | false =>
-      -- Guard false: exit; then `store myF 0`.
+      -- Exit: clear `myF` (release our interest claim).
       iapply wp_ite_false (heval := hev)
       iintro !>
-      wp_step                                   -- wp_skip_cons (skip :: [store myF 0])
-      iintro !>
+      wp_pures
       iapply wp_store_inv (GF := GF) (F := F) (N := nroot)
         (Hsub := by rw [nclose_root])
         (heL := hmyF) (heV := by agar_eval)
@@ -161,46 +145,21 @@ private theorem petersonProc_wp_body
       iintro !>
       wp_done
     | true =>
-      -- Guard true: unroll body, atomic-load oF, branch.
       iapply wp_ite_true (heval := hev)
       iintro !>
       iapply wp_seq
       iintro !>
-      -- body = (f := load oF) ; (if f = 0 then done := 1 else skip)
       iapply wp_seq
       iintro !>
-      iapply wp_load_atomic (GF := GF) (F := F) (N := nroot)
-        (P := iprop(∃ v : Val, points_to (GF := GF) (F := F) _ v))
-        (Hsub := by rw [nclose_root])
-        (heL := hoF)
-      iframe HIoLoop
-      iintro >⟨%vcur, HP⟩
-      imodintro
-      iexists vcur
-      isplitl [HP]
-      · iexact HP
-      iintro HP
-      imodintro
-      isplitl [HP]
-      · inext; iexists vcur; iexact HP
-      wp_step                                   -- wp_skip_cons
-      iintro !>
-      -- Branch on whether vcur = Val.int 0.
+      wp_load_atomic_open HIoLoop hoF
+      wp_lstep
       by_cases hvcur : vcur = Val.int 0
-      · -- then-branch: done := 1
-        iapply wp_ite_true
-          (heval := by
-            subst hvcur
-            show Expr.eval _ _ = _
-            simp [agar_eval]
-            show (Val.int 0 == Val.int 0) = true
-            exact val_beq_refl _)
+      · -- Observed `oF = 0` → exit the spin via `done := 1`.
+        iapply wp_ite_true (heval := by subst hvcur; agar_eval)
         iintro !>
         iapply wp_assign (heval := by agar_eval)
         iintro !>
-        wp_step                                 -- wp_skip_cons
-        iintro !>
-        -- Re-enter loop with J at env_new (done := 1, guard false).
+        wp_lstep
         ihave HIH := HIH $$ %((env.set "f" vcur).set "done" (Val.int 1))
         iapply HIH
         isplitl []
@@ -210,43 +169,16 @@ private theorem petersonProc_wp_body
         iexists false
         ipure_intro
         refine ⟨?_, ?_, ?_⟩
-        · show Expr.eval _ _ = _
-          simp [agar_eval]
-          show Val.beq (.int 1) (.int 0) = false
-          rfl
-        · show Expr.eval _ _ = _
-          show Env.set _ _ _ "oF" = _
-          simp [agar_eval]
-          show Expr.eval env (Expr.var "oF") = _
-          exact hoF
-        · show Expr.eval _ _ = _
-          show Env.set _ _ _ "myF" = _
-          simp [agar_eval]
-          show Env.set env "f" vcur "myF" = _
-          simp [agar_eval]
-          show Expr.eval env (Expr.var "myF") = _
-          exact hmyF
-      · -- else-branch: skip
+        · agar_eval
+        · simpa [agar_eval] using hoF
+        · simpa [agar_eval] using hmyF
+      · -- Observed `oF ≠ 0` → keep spinning.
         iapply wp_ite_false
           (heval := by
-            show Expr.eval _ _ = _
-            simp [Expr.eval, Env.set]
-            cases vcur with
-            | int i =>
-                have hne : i ≠ 0 := fun h => hvcur (by cases h; rfl)
-                show BinOp.eval BinOp.eq (Val.int i) (Val.int 0) = some (Val.bool false)
-                show some (Val.bool (Val.beq (.int i) (.int 0))) = _
-                show some (Val.bool (i == 0)) = _
-                have : (i == 0) = false := by simp [hne]
-                rw [this]
-            | bool _ => rfl
-            | loc _ => rfl
-            | unit => rfl
-            | struct _ => rfl)
+            have hbeq := val_beq_int_false 0 vcur hvcur
+            simp [agar_eval, hbeq])
         iintro !>
-        wp_step                                 -- wp_skip_cons
-        iintro !>
-        -- Re-enter loop with J at env_new (done unchanged, guard true).
+        wp_lstep
         ihave HIH := HIH $$ %(env.set "f" vcur)
         iapply HIH
         isplitl []
@@ -256,24 +188,10 @@ private theorem petersonProc_wp_body
         iexists true
         ipure_intro
         refine ⟨?_, ?_, ?_⟩
-        · show Expr.eval _ _ = _
-          have h1 : (Env.set env "f" vcur) "done" = env "done" := by
-            simp [agar_eval]
-          have h2 : Expr.eval (Env.set env "f" vcur)
-              (Expr.bin BinOp.eq (Expr.var "done") (Expr.val (Val.int 0)))
-              = Expr.eval env
-                  (Expr.bin BinOp.eq (Expr.var "done") (Expr.val (Val.int 0))) := by
-            show (((Env.set env "f" vcur) "done").bind _) = _
-            rw [h1]; rfl
-          rw [h2]; exact hev
-        · show Expr.eval _ _ = _
-          show Env.set _ _ _ "oF" = _
-          simp [agar_eval]
-          exact hoF
-        · show Expr.eval _ _ = _
-          show Env.set _ _ _ "myF" = _
-          simp [agar_eval]
-          exact hmyF
+        · -- `f` ≠ `done`, so the guard's evaluation is invariant under the set.
+          simpa [agar_eval] using hev
+        · simpa [agar_eval] using hoF
+        · simpa [agar_eval] using hmyF
   · -- Initial J at loop entry: done = 0, guard true; oF bound to oFLoc; myF to myFLoc.
     isplitl []
     · iexact HIm
@@ -293,11 +211,7 @@ theorem progPeterson_closed
     (htr : Machine.StepStarN progPeterson n
             (Machine.initial progPeterson) μ') :
     Machine.Adequate progPeterson μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progPeterson ?_ n μ' htr
-  start_closed_proof_with_heap progPeterson
-  -- main := alloc flag0 0 ; alloc flag1 0 ; alloc turn 0 ; fork worker0 ; fork worker1
+  adequacy_with_heap_intro progPeterson Val.unit
   wp_pures                                      -- wp_seq
   wp_alloc_intro HP0                            -- HP0 : f0Loc ↦ 0
   wp_pures                                      -- skip_cons; seq
@@ -305,39 +219,25 @@ theorem progPeterson_closed
   wp_pures                                      -- skip_cons; seq
   wp_alloc_intro HPT                            -- HPT : tLoc ↦ 0
   wp_pures                                      -- skip_cons; seq exposing first fork
-  -- Allocate the three invariants before the first fork; demote all.
   wp_inv_alloc_pt HP0 HI0 0
   wp_inv_alloc_pt HP1 HI1 0
   wp_inv_alloc_pt HPT HIT 0
-  ihave #HI0 := HI0
-  ihave #HI1 := HI1
-  ihave #HIT := HIT
-  -- First fork: petersonProc(flag0, flag1, turn, 1)
-  iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-    _ "petersonProc"
-    [Expr.var "flag0", Expr.var "flag1", Expr.var "turn",
-      Expr.val (Val.int 1)] petersonProc
-    [Val.loc _, Val.loc _, Val.loc _, Val.int 1]
+  wp_fork_emp "petersonProc"
+    [Expr.var "flag0", Expr.var "flag1", Expr.var "turn", Expr.val (Val.int 1)]
+    petersonProc [Val.loc _, Val.loc _, Val.loc _, Val.int 1]
     [Stmt.fork "petersonProc"
       [Expr.var "flag1", Expr.var "flag0", Expr.var "turn",
-        Expr.val (Val.int 0)]] _ [] _
-    rfl (by agar_eval) rfl
+        Expr.val (Val.int 0)]]
   isplitr
   · -- Worker 0: myF=flag0, oF=flag1, t=turn.
     iintro !>
     iapply petersonProc_wp_body
     iframe HI0 HI1 HIT
   · iintro !>
-    wp_step                                     -- wp_skip_cons
-    iintro !>
-    -- Second fork: petersonProc(flag1, flag0, turn, 0)
-    iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-      _ "petersonProc"
-      [Expr.var "flag1", Expr.var "flag0", Expr.var "turn",
-        Expr.val (Val.int 0)] petersonProc
-      [Val.loc _, Val.loc _, Val.loc _, Val.int 0]
-      [] _ [] _
-      rfl (by agar_eval) rfl
+    wp_pures
+    wp_fork_emp "petersonProc"
+      [Expr.var "flag1", Expr.var "flag0", Expr.var "turn", Expr.val (Val.int 0)]
+      petersonProc [Val.loc _, Val.loc _, Val.loc _, Val.int 0] []
     isplitr
     · -- Worker 1: myF=flag1, oF=flag0, t=turn.
       iintro !>

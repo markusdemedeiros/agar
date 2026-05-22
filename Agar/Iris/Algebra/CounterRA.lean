@@ -64,6 +64,32 @@ theorem counter_increment (γ : GName) (n m : Nat) :
     (iOwn_op (GF := GF) (F := CounterF)
       (γ := γ) (a1 := (● (n + 1))) (a2 := (◯ (m + 1)))).mp
 
+/-! ## Timeless / discrete instances
+
+`counter_auth γ n` and `counter_frag γ m` are timeless, since the underlying
+`Auth (PNat × Nat)` carrier is OFE-discrete (no step-indexing in the value).
+Timelessness is what lets clients strip `▷` from the ghost components when
+opening an invariant for an atomic step — exactly the move that drives the
+`wp_cas_atomic_split` / `wp_load_atomic` proofs in `Examples/Counter.lean`
+and `Examples/Mutex.lean`. Both files used to redeclare these by hand; they
+now flow in via instance resolution. -/
+
+instance counter_auth_discreteE (n : Nat) :
+    OFE.DiscreteE ((● n : Auth PNat Nat)) :=
+  Auth.auth_discrete (a := n) (dq := DFrac.own 1) inferInstance inferInstance
+
+instance counter_frag_discreteE (n : Nat) :
+    OFE.DiscreteE ((◯ n : Auth PNat Nat)) :=
+  Auth.frag_discrete (a := n) inferInstance
+
+instance counter_auth_timeless (γ : GName) (n : Nat) :
+    BI.Timeless (counter_auth (GF := GF) γ n) := by
+  unfold counter_auth; exact iOwn_timeless
+
+instance counter_frag_timeless (γ : GName) (n : Nat) :
+    BI.Timeless (counter_frag (GF := GF) γ n) := by
+  unfold counter_frag; exact iOwn_timeless
+
 end Counter
 
 end Agar.Logic

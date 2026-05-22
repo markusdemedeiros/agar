@@ -27,17 +27,7 @@ namespace Agar.Logic
 
 open Iris Iris.BI Iris.OFE
 
-/-! ## First concurrent closed adequacy
-
-`progForkUnit` spawns one auxiliary thread running a procedure `unitProc`
-whose body is `skip`, then the main thread falls through. Both the
-forked thread and the (post-fork) main thread are terminal value-threads
-carrying `Val.unit`.
-
-We pick `fork_post := emp`: the forked thread's WP obligation collapses
-to `emp ⊢ wp ⟨skip, [], _, [], none⟩ (fun _ => emp)`, dischargeable by
-`wp_value` at `Val.unit`.
--/
+/-! ## `progForkUnit` — fork `skip`, fall through to `Val.unit` -/
 
 def unitProc : Proc where
   params := []
@@ -53,32 +43,17 @@ theorem progForkUnit_closed
     (n : Nat) (μ' : Machine)
     (htr : Machine.StepStarN progForkUnit n (Machine.initial progForkUnit) μ') :
     Machine.Adequate progForkUnit μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progForkUnit ?_ n μ' htr
-  intro _LC
-  heap_adequacy_intro progForkUnit
-  -- WP of `Thread.initial (fork "unitProc" [])`. Apply `wp_fork` with fork_post := emp.
+  adequacy_with_heap_intro progForkUnit Val.unit
   iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
     _ "unitProc" [] unitProc [] [] Env.empty [] _ rfl rfl rfl
   isplitr
-  · -- Forked thread: body = skip; bindParams [] [] = Env.empty.
-    -- Goal: ▷ wp _ emp ⊤ ⟨skip, [], Env.empty, [], none⟩ (fun _ => emp).
-    iintro !>
+  · iintro !>
     wp_done
-  · -- Parent's continuation: `⟨skip, [], Env.empty, [], none⟩` at value `Val.unit`.
-    iintro !>
+  · iintro !>
     wp_done
 
 
-/-! ## Concurrent + heap closed adequacy
-
-`progForkAlloc` combines fork with heap activity: main forks a thread
-running `allocFreeProc` whose body is `x := alloc 7 ; free x`, then
-falls through. Both threads terminate at `Val.unit`; the forked
-thread's heap activity is self-contained (alloc then free), so it
-admits `fork_post := emp`.
--/
+/-! ## `progForkAlloc` — forked thread does `alloc 7 ; free x` round-trip -/
 
 def allocFreeProc : Proc where
   params := []
@@ -97,16 +72,11 @@ theorem progForkAlloc_closed
     (n : Nat) (μ' : Machine)
     (htr : Machine.StepStarN progForkAlloc n (Machine.initial progForkAlloc) μ') :
     Machine.Adequate progForkAlloc μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progForkAlloc ?_ n μ' htr
-  intro _LC
-  heap_adequacy_intro progForkAlloc
+  adequacy_with_heap_intro progForkAlloc Val.unit
   iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
     _ "allocFreeProc" [] allocFreeProc [] [] Env.empty [] _ rfl rfl rfl
   isplitr
-  · -- Forked thread: body = alloc "x" 7 ; free x.
-    iintro !>
+  · iintro !>
     unfold allocFreeProc
     wp_steps
     wp_alloc_intro HP
@@ -114,8 +84,7 @@ theorem progForkAlloc_closed
     wp_free HP
     wp_steps
     wp_done
-  · -- Parent continuation: terminal value-thread at Val.unit.
-    iintro !>
+  · iintro !>
     wp_done
 
 end Agar.Logic

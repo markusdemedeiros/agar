@@ -56,6 +56,21 @@ scoped macro "wp_step" : tactic => `(tactic|
   | iapply wp_call _ _ _ _ _ _ _ _ _ _ _ rfl (by agar_eval) rfl
   | iapply wp_fork _ _ _ _ _ _ _ _ _ _ rfl (by agar_eval) rfl)
 
+/-- `wp_step` followed by `iintro !>`. After any WP rule that leaves
+its continuation under a `▷`, strip the later in one go. -/
+scoped macro "wp_lstep" : tactic => `(tactic|
+  (wp_step; iintro !>))
+
+/-- Sequenced assign step: advance past `skip-cons; seq`, fire
+`wp_assign` discharging the `heval` with `simp [agar_eval]; rfl`, and
+strip the trailing `▷`. Common for chained `x := e` lines whose `e`
+needs an env-lookup that `wp_step`'s plain `agar_eval` won't reduce. -/
+scoped macro "wp_assign_simp" : tactic => `(tactic|
+  (wp_lstep
+   wp_lstep
+   iapply wp_assign (heval := by simp [agar_eval]; rfl)
+   iintro !>))
+
 /-- Close a terminal WP goal:
 * `return e` at the top of the stack via `wp_ret_top` (eval via `agar_eval`);
 * a value thread via `wp_value` (defaulting the value to `Val.unit`).
@@ -128,6 +143,29 @@ scoped macro "wp_pures" : tactic => `(tactic|
   (try iintro !>
    try wp_pure_step
    repeat (first | (iintro !>; wp_pure_step) | wp_pure_step)
+   try iintro !>))
+
+/-- One pure step EXCEPT `wp_while`. Like `wp_pure_step` but stops when
+the head statement is `whileDo`, so the caller can hand off to
+`wp_spin` / `wp_spin_invariant` / `wp_spin_fixed_env` without having to
+spell out a counted run of `wp_step`s. -/
+scoped macro "wp_pure_step_no_loop" : tactic => `(tactic|
+  first
+  | iapply wp_skip_cons
+  | iapply wp_seq
+  | (iapply wp_assign; · agar_eval)
+  | (iapply wp_ite_true;  · agar_eval)
+  | (iapply wp_ite_false; · agar_eval)
+  | iapply wp_skip_frame_cons
+  | iapply wp_skip_frame_nil)
+
+/-- `wp_pures_no_loop` — drive past pure steps but stop the moment the
+head statement is `whileDo`. Mirrors `wp_pures` but EXCLUDES the
+`wp_while` rule, leaving the loop intact for a subsequent spin tactic. -/
+scoped macro "wp_pures_no_loop" : tactic => `(tactic|
+  (try iintro !>
+   try wp_pure_step_no_loop
+   repeat (first | (iintro !>; wp_pure_step_no_loop) | wp_pure_step_no_loop)
    try iintro !>))
 
 /-! ## Local proof-mode helpers
@@ -235,13 +273,15 @@ scoped syntax "wp_cas_succ " ident (ppSpace colGt term:max)? : tactic
 macro_rules
   | `(tactic| wp_cas_succ $h:ident) => `(tactic| (
       iapply wp_cas_succ _ _ _ _ _ _ _ _ _ _ _ _ _
-        (by agar_eval) (by agar_eval) (by agar_eval)
+        (by simp [agar_eval] <;> first | rfl | assumption)
+        (by agar_eval) (by agar_eval)
         (by first | exact val_beq_refl _ | rfl | decide)
       isplitl [$h]
       iexact $h))
   | `(tactic| wp_cas_succ $h:ident $heq:term) => `(tactic| (
       iapply wp_cas_succ _ _ _ _ _ _ _ _ _ _ _ _ _
-        (by agar_eval) (by agar_eval) (by agar_eval) $heq
+        (by simp [agar_eval] <;> first | rfl | assumption)
+        (by agar_eval) (by agar_eval) $heq
       isplitl [$h]
       iexact $h))
 
@@ -263,15 +303,20 @@ scoped macro "wp_alloc" : tactic => `(tactic|
   iapply wp_alloc _ _ _ _ _ _ _ _ _ (by agar_eval))
 
 /-- `wp_alloc_intro HP` is `wp_alloc` followed by `iintro !> %l HP`:
-strips the `▷`, binds the fresh location as a pure `l` (callers can
-also write `wp_alloc_intro l HP` to choose the location name), and
-names the fresh points-to fragment `HP` in the IPM context. -/
-scoped syntax "wp_alloc_intro " ident : tactic
+strips the `▷`, binds the fresh location as a pure `l`, and names the
+fresh points-to fragment `HP` in the IPM context. The two-argument form
+`wp_alloc_intro LOC HP` chooses the pure-binder name for the fresh
+location (so callers that already use that name elsewhere — e.g.
+`sLoc'` in the slot-channel example — can keep their bindings stable). -/
+scoped syntax "wp_alloc_intro " ident (colGt ident)? : tactic
 set_option hygiene false in
 macro_rules
   | `(tactic| wp_alloc_intro $h:ident) => `(tactic| (
       iapply wp_alloc _ _ _ _ _ _ _ _ _ (by agar_eval)
       iintro !> %l $h:ident))
+  | `(tactic| wp_alloc_intro $loc:ident $h:ident) => `(tactic| (
+      iapply wp_alloc _ _ _ _ _ _ _ _ _ (by agar_eval)
+      iintro !> %$loc:ident $h:ident))
 
 /-! ## Procedure call / fork variants
 
@@ -433,17 +478,18 @@ macro_rules
 binding the resulting (persistent) invariant as `HI`. Replaces the
 6-line `iapply fupd_wp ; imod inv_alloc ... ; · inext ... ; imodintro`
 motif repeated 5+ times in `ClosedProofInv.lean`. -/
-scoped syntax "wp_inv_alloc_pt " ident ppSpace icasesPat ppSpace term:max : tactic
+scoped syntax "wp_inv_alloc_pt " ident ppSpace ident ppSpace term:max : tactic
 set_option hygiene false in
 macro_rules
-  | `(tactic| wp_inv_alloc_pt $h:ident $hi:icasesPat $n:term) => do
+  | `(tactic| wp_inv_alloc_pt $h:ident $hi:ident $n:term) => do
       let hf : Lean.TSyntax `frameIdent ← `(frameIdent| $h:ident)
       `(tactic| (
         iapply fupd_wp
         imod (inv_alloc nroot CoPset.full
-                iprop(∃ v : Agar.Val, points_to _ v)) $$ [$hf] with $hi
+                iprop(∃ v : Agar.Val, points_to _ v)) $$ [$hf] with $hi:ident
         · inext; iexists (Agar.Val.int $n); iexact $h
-        imodintro))
+        imodintro
+        ihave #$hi:ident := $hi:ident))
 
 /-! ## Shared adequacy preamble macros
 
@@ -479,6 +525,137 @@ scoped macro_rules
       (intro _LC; heap_adequacy_intro))
   | `(tactic| start_closed_proof_with_heap $p:ident) => `(tactic|
       (intro _LC; heap_adequacy_intro $p))
+
+/-! ### `adequacy_with_heap_intro` — full adequacy entry-point
+
+A `prog_closed : Machine.Adequate prog μ' tgt` theorem invariably opens
+with the same four-line preamble: unfold `Machine.Adequate`, apply
+`wp_strong_adequacy_bupd` at the universally quantified `(n, μ', htr)`,
+and run `start_closed_proof_with_heap prog` to expose the WP for
+`Thread.initial (main of prog)`. This macro bundles those four lines
+into one.
+
+Usage requires the theorem's binders to be named `n`, `μ'`, `htr` (the
+established convention across the examples folder) and the GF context
+to be in scope as `GF`. -/
+
+@[expose] scoped syntax "adequacy_with_heap_intro" ppSpace ident ppSpace term:max : tactic
+set_option hygiene false in
+scoped macro_rules
+  | `(tactic| adequacy_with_heap_intro $p:ident $tgt:term) => `(tactic| (
+      unfold Machine.Adequate Machine.Safe Machine.MainReturns
+      refine wp_strong_adequacy_bupd (GF := GF)
+        (φ := fun v => v = $tgt) $p ?_ n μ' htr
+      start_closed_proof_with_heap $p))
+
+/-- Predicate-form variant: opens a `Machine.AdequateP prog μ' φ`
+obligation with the same heap-init boilerplate. The user supplies the
+predicate directly. -/
+@[expose] scoped syntax "adequacy_with_heap_intro_P" ppSpace ident ppSpace term:max : tactic
+set_option hygiene false in
+scoped macro_rules
+  | `(tactic| adequacy_with_heap_intro_P $p:ident $φ:term) => `(tactic| (
+      unfold Machine.AdequateP Machine.Safe Machine.MainReturnsP
+      refine wp_strong_adequacy_bupd (GF := GF)
+        (φ := $φ) $p ?_ n μ' htr
+      start_closed_proof_with_heap $p))
+
+/-! ## `wp_fork_emp` — fork with `fork_post := emp`
+
+Every concurrent example in the examples folder forks with the same
+`fork_post := iprop(emp : IProp GF)` (threads close at `emp` because
+they own no caller resources past the fork). The full invocation is
+
+```
+iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
+  _ PROC_NAME ARGS PROC_CONST VS CONT _ [] _
+  rfl (by agar_eval) rfl
+```
+
+`wp_fork_emp PROC_NAME ARGS PROC_CONST VS CONT` packs the uniform
+boilerplate (GF/F/fork_post + the trailing rfl/agar_eval/rfl
+obligations), exposing only the five positional pieces that vary
+per-site: which procedure to fork, with what expression args, mapping
+to which `Proc` constant, what value list those evaluate to, and what
+the parent's continuation looks like. -/
+
+@[expose] scoped syntax "wp_fork_emp" ppSpace term:max ppSpace term:max
+    ppSpace term:max ppSpace term:max ppSpace term:max : tactic
+set_option hygiene false in
+scoped macro_rules
+  | `(tactic| wp_fork_emp $f:term $args:term $proc:term $vs:term $cont:term) =>
+      `(tactic| (
+        iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
+          _ $f $args $proc $vs $cont _ [] _
+          rfl (by agar_eval) rfl))
+
+/-! ## `inv_alloc_left` / `inv_alloc_right` — allocate a disjunctive
+shared invariant into a chosen disjunct
+
+The standard six-line incantation for "carve a fresh persistent
+invariant out of a heap fragment, with the body opening in the LEFT
+(resp. RIGHT) disjunct of a `P_l ∨ P_r` body":
+
+```
+iapply fupd_wp
+imod (inv_alloc nroot CoPset.full BODY) $$ [HX] with HI
+· inext; ileft; iexact HX   -- (or iright)
+imodintro
+ihave #HI := HI
+```
+
+`inv_alloc_left BODY HX` (resp. `inv_alloc_right`) names the move and
+binds the resulting persistent `HI`. Single-resource form — disjuncts
+that bundle ghosts or existentials still take the manual route. -/
+
+@[expose] scoped syntax "inv_alloc_left" ppSpace term:max ppSpace ident : tactic
+set_option hygiene false in
+scoped macro_rules
+  | `(tactic| inv_alloc_left $body:term $hx:ident) => `(tactic| (
+      iapply fupd_wp
+      imod (inv_alloc nroot CoPset.full $body) $$ [$hx:ident] with HI
+      · inext; ileft; iexact $hx:ident
+      imodintro
+      ihave #HI := HI))
+
+@[expose] scoped syntax "inv_alloc_right" ppSpace term:max ppSpace ident : tactic
+set_option hygiene false in
+scoped macro_rules
+  | `(tactic| inv_alloc_right $body:term $hx:ident) => `(tactic| (
+      iapply fupd_wp
+      imod (inv_alloc nroot CoPset.full $body) $$ [$hx:ident] with HI
+      · inext; iright; iexact $hx:ident
+      imodintro
+      ihave #HI := HI))
+
+/-! ## `inv_alloc_with` — multi-resource inv-alloc with explicit closer
+
+When a disjunctive invariant body bundles ghosts or existential witnesses
+(e.g. `Counter.lean`'s `counterInv` opens with `c ↦ 0 ∗ auth γ 0 ∗ frag γ 0`),
+neither `wp_inv_alloc_pt` (existential-points-to body) nor
+`inv_alloc_left/right` (single-resource close) fit. `inv_alloc_with`
+takes the body, a list of spatial fragments to consume, the persistent
+binder, and an explicit closer tactic for the `▷ BODY` obligation:
+
+```
+inv_alloc_with (counterInv GF F cLoc γ) [HPC Hauth Hfrag] HI by
+  inext; ileft; iframe HPC; iframe Hauth; iexact Hfrag
+```
+
+expands to the 7-line motif
+`iapply fupd_wp; imod (inv_alloc …) $$ […] with HI; · <closer>; imodintro; ihave #HI := HI`. -/
+
+@[expose] scoped syntax "inv_alloc_with" ppSpace term:max ppSpace
+    "[" (frameIdent)* "]" ppSpace ident " by " Lean.Parser.Tactic.tacticSeq : tactic
+set_option hygiene false in
+scoped macro_rules
+  | `(tactic| inv_alloc_with $body:term [ $frags:frameIdent* ] $hi:ident
+              by $closer:tacticSeq) => `(tactic| (
+      iapply fupd_wp
+      imod (inv_alloc nroot CoPset.full $body) $$ [ $[$frags]* ] with $hi:ident
+      · $closer:tacticSeq
+      imodintro
+      ihave #$hi:ident := $hi:ident))
 
 /-! ## Extensions: ▷-commute helpers
 

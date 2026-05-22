@@ -21,81 +21,14 @@ public import Agar.Iris.WpSpin
 
 /-! # `progReadback` — concurrent register with functional-correctness return
 
-A two-thread program whose main thread returns a *nontrivial* value
-witnessing that the consumer correctly observed the producer's write
-across a synchronisation:
+Producer stores `42` into a shared cell; main spin-reads until it
+observes the write, then `return result`. Adequacy at `Val.int 42`.
 
-```
-producerProc(flag) := store flag 42
-
-progReadback.main := ags(
-  flag := alloc 0 ;
-  fork producerProc(flag) ;
-  done := 0 ;
-  result := 0 ;
-  while done = 0 do (
-    v := load flag ;
-    if v = 0 then skip else (result := v ; done := 1)
-  ) ;
-  return result
-)
-```
-
-The shared cell is the simplest concurrent data structure: a *single-cell
-shared register* whose abstract value transitions monotonically from `0`
-(unwritten) to `42` (written). The consumer spin-loads it; on observing
-the nonzero value it commits `result := 42` and exits. The post-loop
-`return result` yields the program's value.
-
-### What this proves
-
-`progReadback_closed` discharges
-`Machine.Adequate progReadback μ' (Val.int 42)`: every thread is
-terminated or reducible, AND every terminated main thread returns
-`Val.int 42` — never `0`, never anything else. This is genuine
-*functional* correctness, not just safety: the register's read-side
-faithfully observes its write-side.
-
-Every other forking/spinning example in this directory closes adequacy
-at `Val.unit` (safety alone — main falls through after the fork(s)).
-This example is the one with a nontrivial post-condition.
-
-### Invariant shape
-
-The shared cell is protected by a *bounded* existential invariant:
-
-```
-flagInv := ∃ v, flag ↦ v ∗ ⌜v = 0 ∨ v = 42⌝
-```
-
-Two design choices follow:
-
-1. The producer uses `wp_store_atomic` (not `wp_store_inv`) so it can
-   supply this *bounded* body in place of the unrestricted
-   `∃ v, flag ↦ v`. Re-establishing the body after writing `42`
-   discharges the pure disjunct on the right.
-2. The consumer's `wp_load_atomic` is instantiated with the same body,
-   so the loaded `vcur` comes paired with `⌜vcur = 0 ∨ vcur = 42⌝`.
-   The `if v = 0` branch is then a *complete* case-split: the then-
-   branch is taken iff `vcur = 0`; the else-branch's `result := v`
-   provably writes `Val.int 42`.
-
-### Loop invariant
-
-The spin loop runs under `wp_spin` with:
-
-```
-J env := inv N flagInv ∗
-        ⌜eval env (var flag) = some (.loc l) ∧
-          ((env "done" = some (.int 0) ∧ env "result" = some (.int 0))
-         ∨ (env "done" = some (.int 1) ∧ env "result" = some (.int 42)))⌝
-```
-
-The disjunction on `(done, result)` is the heart of the
-functional-correctness proof: it carries the conditional `done = 1 →
-result = 42` through the loop. On guard-false exit we land in the
-right disjunct, `env "result" = Val.int 42`, and `return result`
-evaluates to `Val.int 42`. -/
+The bounded invariant `∃ v, flag ↦ v ∗ ⌜v = 0 ∨ v = 42⌝` pins the cell's
+abstract state to two values; the spin loop's `J` carries the matching
+`(done, result) ∈ {(0,0), (1,42)}` correlation so guard-false exit
+lands in `result = 42`. (Cf. `progCounterCas`: same spin-readback shape
+applied to a disjunctive CAS-counter invariant.) -/
 
 namespace Agar.Logic
 
@@ -149,33 +82,15 @@ theorem progReadback_closed
     (htr : Machine.StepStarN progReadback n
             (Machine.initial progReadback) μ') :
     Machine.Adequate progReadback μ' (Val.int 42) := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.int 42) progReadback ?_ n μ' htr
-  start_closed_proof_with_heap progReadback
-  -- main : flag := alloc 0 ; fork producer(flag) ;
-  --        done := 0 ; result := 0 ;
-  --        while done=0 do (v := load flag ; if v=0 then skip else (...)) ;
-  --        return result
-  wp_step                                       -- wp_seq exposing alloc
-  iintro !>
-  wp_alloc
-  iintro !> %l HP                               -- HP : l ↦ 0
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq exposing fork
-  iintro !>
-  -- Allocate the shared bounded invariant in the LEFT disjunct.
-  iapply fupd_wp
-  imod (inv_alloc nroot CoPset.full (flagInv GF F l)) $$ [HP] with HI
-  · inext; iexists (Val.int 0); isplitl [HP]
+  adequacy_with_heap_intro progReadback (Val.int 42)
+  wp_pures
+  wp_alloc_intro l HP
+  wp_pures
+  inv_alloc_with (flagInv GF F l) [HP] HI by
+    inext; iexists (Val.int 0); isplitl [HP]
     · iexact HP
     · ipure_intro; left; rfl
-  imodintro
-  ihave #HI := HI
-  -- fork readbackProducerProc(flag); cont = the rest of main.
-  iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-    _ "readbackProducerProc" [Expr.var "flag"] readbackProducerProc
+  wp_fork_emp "readbackProducerProc" [Expr.var "flag"] readbackProducerProc
     [Val.loc _]
     [ags(
       done   := 0 ;
@@ -185,10 +100,9 @@ theorem progReadback_closed
         if v = 0 then skip else (result := v ; done := 1)
       )) ;
       return result
-    )] _ [] _
-    rfl (by agar_eval) rfl
+    )]
   isplitr
-  · -- Forked producer: body = store flag 42, opens the bounded invariant.
+  · -- Producer: store flag 42, transitioning the cell from 0 to 42.
     iintro !>
     unfold readbackProducerProc
     iapply wp_store_atomic (GF := GF) (F := F) (N := nroot)
@@ -201,27 +115,15 @@ theorem progReadback_closed
     iexists vold
     isplitl [HP]
     · iexact HP
-    iintro HP                                   -- HP : l ↦ Val.int 42
+    iintro HP
     imodintro
     isplitl [HP]
     · inext; iexists (Val.int 42); isplitl [HP]
       · iexact HP
       · ipure_intro; right; rfl
     wp_done
-  · -- Parent continuation: done := 0 ; result := 0 ; whileDo … ; return result.
-    iintro !>
-    -- 8 pure steps to reach the whileDo at env_loop binding done=0, result=0
-    -- (skip_cons; seq; assign done; skip_cons; seq; assign result; skip_cons; seq).
-    wp_step; iintro !>            -- wp_skip_cons (post-fork)
-    wp_step; iintro !>            -- wp_seq exposing `done := 0`
-    wp_step; iintro !>            -- wp_assign done
-    wp_step; iintro !>            -- wp_skip_cons
-    wp_step; iintro !>            -- wp_seq exposing `result := 0`
-    wp_step; iintro !>            -- wp_assign result
-    wp_step; iintro !>            -- wp_skip_cons
-    wp_step; iintro !>            -- wp_seq exposing the whileDo
-    -- env_loop now binds: flag↦l, done↦0, result↦0.
-    -- Goal: wp ⟨whileDo (done=0) body, [return result], env_loop, [], none⟩.
+  · iintro !>
+    wp_pures_no_loop
     iapply (wp_spin (GF := GF) _ _ _ _ _ _ _
       (J := fun env =>
         iprop(inv nroot (flagInv GF F l) ∗
@@ -234,21 +136,12 @@ theorem progReadback_closed
       inext
       icases HJ with %hpure
       obtain ⟨hflag, hdr⟩ := hpure
-      -- Case-split on the (done, result) disjunct.
       rcases hdr with ⟨hdone, hresult⟩ | ⟨hdone, hresult⟩
-      · -- LEFT disjunct: done = 0, result = 0. Guard true. Run body.
-        have hguard : Expr.eval env
-            (Expr.bin BinOp.eq (Expr.var "done") (Expr.val (Val.int 0)))
-            = some (.bool true) := by
-          show Expr.eval _ _ = _
-          show (env "done").bind _ = _
-          rw [hdone]; rfl
-        iapply wp_ite_true (heval := hguard)
+      · -- LEFT (unwritten): run the body, atomic-load, branch on vcur ∈ {0, 42}.
+        iapply wp_ite_true (heval := by simp [agar_eval, hdone]; rfl)
         iintro !>
-        -- We're at `seq BODY whileDo` where BODY = seq (load) (ite v=0 ...).
-        -- Peel the outer seq, then the inner seq, to expose `load v flag`.
-        wp_step; iintro !>                       -- wp_seq exposing BODY
-        wp_step; iintro !>                       -- wp_seq exposing load
+        wp_lstep
+        wp_lstep
         iapply wp_load_atomic (GF := GF) (F := F) (N := nroot)
           (P := flagInv GF F l)
           (Hsub := by rw [nclose_root])
@@ -265,64 +158,34 @@ theorem progReadback_closed
         · inext; iexists vcur; isplitl [HP]
           · iexact HP
           · ipure_intro; exact hpcur
-        -- env after load: env_v = env.set "v" vcur. Continue.
-        wp_step                                  -- wp_skip_cons (post-load)
-        iintro !>
-        -- Branch on whether vcur = 0 or vcur = 42 (extracted from hpcur).
+        wp_lstep
         rcases hpcur with h0 | h42
-        · -- vcur = 0: take then-branch (skip). State unchanged on (done, result).
+        · -- vcur = 0: register still unwritten, keep `J` in LEFT.
           subst h0
-          iapply wp_ite_true
-            (heval := by
-              show Expr.eval _ _ = _
-              simp [agar_eval]
-              show Val.beq (.int 0) (.int 0) = true
-              rfl)
+          iapply wp_ite_true (heval := by agar_eval)
           iintro !>
-          wp_step                                -- wp_skip_cons
-          iintro !>
-          -- Goal: wp ⟨whileDo, [return result], env.set "v" 0, [], none⟩.
+          wp_lstep
           ihave HIH := HIH $$ %(env.set "v" (Val.int 0))
           iapply HIH
           isplitl []
           · iexact HI
           ipure_intro
           refine ⟨?_, Or.inl ⟨?_, ?_⟩⟩
-          · -- flag lookup unchanged.
-            show Expr.eval _ _ = _
-            show Env.set _ _ _ "flag" = _
-            simp [agar_eval]
-            show Expr.eval env (Expr.var "flag") = _
-            exact hflag
-          · -- done lookup unchanged.
-            show Env.set env "v" (Val.int 0) "done" = _
-            simp [agar_eval]
-            exact hdone
-          · -- result lookup unchanged.
-            show Env.set env "v" (Val.int 0) "result" = _
-            simp [agar_eval]
-            exact hresult
-        · -- vcur = 42: take else-branch (result := v ; done := 1).
+          · simpa [agar_eval] using hflag
+          · simpa [agar_eval] using hdone
+          · simpa [agar_eval] using hresult
+        · -- vcur = 42: producer observed → run `result := v ; done := 1`,
+          -- transition `J` LEFT → RIGHT.
           subst h42
-          iapply wp_ite_false
-            (heval := by
-              show Expr.eval _ _ = _
-              simp [agar_eval]
-              show Val.beq (.int 42) (.int 0) = false
-              rfl)
+          iapply wp_ite_false (heval := by agar_eval)
           iintro !>
-          -- body of else: result := v ; done := 1.
-          wp_step                                -- wp_seq exposing `result := v`
-          iintro !>
+          wp_lstep
           iapply wp_assign (heval := by agar_eval)
           iintro !>
-          wp_step                                -- wp_skip_cons
-          iintro !>
+          wp_lstep
           iapply wp_assign (heval := by agar_eval)
           iintro !>
-          wp_step                                -- wp_skip_cons
-          iintro !>
-          -- env_new = ((env.set "v" 42).set "result" 42).set "done" 1.
+          wp_lstep
           ihave HIH := HIH $$ %(((env.set "v" (Val.int 42)).set "result"
               (Val.int 42)).set "done" (Val.int 1))
           iapply HIH
@@ -330,41 +193,103 @@ theorem progReadback_closed
           · iexact HI
           ipure_intro
           refine ⟨?_, Or.inr ⟨?_, ?_⟩⟩
-          · -- flag lookup: all three sets touch other keys.
-            show Expr.eval _ (Expr.var "flag") = _
+          · show Expr.eval _ (Expr.var "flag") = _
             exact hflag
-          · -- done lookup: last set was "done" → Val.int 1.
-            rfl
-          · -- result lookup: "done" set above doesn't touch "result";
-            -- the prior "result" set gave Val.int 42.
-            rfl
-      · -- RIGHT disjunct: done = 1, result = 42. Guard false. Exit loop.
-        have hguard : Expr.eval env
-            (Expr.bin BinOp.eq (Expr.var "done") (Expr.val (Val.int 0)))
-            = some (.bool false) := by
-          show (env "done").bind _ = _
-          rw [hdone]; rfl
-        iapply wp_ite_false (heval := hguard)
+          · rfl
+          · rfl
+      · -- RIGHT (observed): guard is false, exit loop, return `result = 42`.
+        iapply wp_ite_false (heval := by simp [agar_eval, hdone]; rfl)
         iintro !>
-        wp_step; iintro !>                       -- wp_skip_cons (after loop)
-        -- Goal: wp ⟨ret result, [], env, [], none⟩ ⌜·= Val.int 42⌝.
+        wp_lstep
         iapply (wp_ret_top _ _ (Expr.var "result") (Val.int 42) [] env _
-          (heval := by
-            show Expr.eval _ _ = _
-            rw [show Expr.eval env (Expr.var "result") = env "result" from rfl]
-            rw [hresult]))
+          (heval := by simp [agar_eval, hresult]))
         ipure_intro; rfl
-    · -- Initial J at env_loop = (env.set "flag" l).set "done" 0).set "result" 0.
+    · -- Initial `J` at loop entry: LEFT disjunct (unwritten).
       isplitl []
       · iexact HI
       ipure_intro
-      refine ⟨?_, Or.inl ⟨?_, ?_⟩⟩
-      · agar_eval
-      · -- env_loop "done" = some (Val.int 0).
-        show Env.set _ _ _ "done" = _
-        simp [agar_eval]
-      · -- env_loop "result" = some (Val.int 0).
-        show Env.set _ _ _ "result" = _
-        simp [agar_eval]
+      refine ⟨?_, Or.inl ⟨?_, ?_⟩⟩ <;> agar_eval
+
+/-! ## `progReadbackRace` — predicate-form adequacy: `result ∈ {0, 42}`
+
+Sibling program that drops the spin-readback. Main forks the producer
+and reads the flag exactly once. The observed value depends on whether
+the producer's `store flag 42` has fired yet, so the result is a *set*
+`{0, 42}`. This is what `Machine.AdequateP` captures that
+`Machine.Adequate` cannot — a postcondition that ranges over a property
+rather than pinning to a single value. -/
+
+def progReadbackRace : Program where
+  procs := fun n =>
+    if n = "readbackProducerProc" then some readbackProducerProc else none
+  main  := ags(
+    flag := alloc 0 ;
+    fork readbackProducerProc(flag) ;
+    v := load flag ;
+    return v
+  )
+
+theorem progReadbackRace_closedP
+    {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
+    [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
+    (n : Nat) (μ' : Machine)
+    (htr : Machine.StepStarN progReadbackRace n
+            (Machine.initial progReadbackRace) μ') :
+    Machine.AdequateP progReadbackRace μ'
+      (fun v => v = Val.int 0 ∨ v = Val.int 42) := by
+  adequacy_with_heap_intro_P progReadbackRace
+    (fun v => v = Val.int 0 ∨ v = Val.int 42)
+  wp_pures
+  wp_alloc_intro l HP
+  wp_pures
+  inv_alloc_with (flagInv GF F l) [HP] HI by
+    inext; iexists (Val.int 0); isplitl [HP]
+    · iexact HP
+    · ipure_intro; left; rfl
+  wp_fork_emp "readbackProducerProc" [Expr.var "flag"] readbackProducerProc
+    [Val.loc _]
+    [ags(v := load flag ; return v)]
+  isplitr
+  · iintro !>
+    unfold readbackProducerProc
+    iapply wp_store_atomic (GF := GF) (F := F) (N := nroot)
+      (P := flagInv GF F l)
+      (Hsub := by rw [nclose_root])
+      (heL := by agar_eval) (heV := by agar_eval)
+    iframe HI
+    iintro >⟨%vold, HP, %_hpold⟩
+    imodintro
+    iexists vold
+    isplitl [HP]
+    · iexact HP
+    iintro HP
+    imodintro
+    isplitl [HP]
+    · inext; iexists (Val.int 42); isplitl [HP]
+      · iexact HP
+      · ipure_intro; right; rfl
+    wp_done
+  · iintro !>
+    wp_pures
+    iapply wp_load_atomic (GF := GF) (F := F) (N := nroot)
+      (P := flagInv GF F l)
+      (Hsub := by rw [nclose_root])
+      (heL := by agar_eval)
+    iframe HI
+    iintro >⟨%vcur, HP, %hpcur⟩
+    imodintro
+    iexists vcur
+    isplitl [HP]
+    · iexact HP
+    iintro HP
+    imodintro
+    isplitl [HP]
+    · inext; iexists vcur; isplitl [HP]
+      · iexact HP
+      · ipure_intro; exact hpcur
+    wp_lstep
+    iapply (wp_ret_top _ _ (Expr.var "v") vcur [] _ _
+      (heval := by agar_eval))
+    ipure_intro; exact hpcur
 
 end Agar.Logic

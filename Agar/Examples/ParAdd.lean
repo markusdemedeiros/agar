@@ -84,31 +84,14 @@ private theorem writerProc_wp_body
   istart
   iintro HP
   unfold writerProc
-  -- Body: store p 1.   env(p) = Val.loc l.
   wp_store HP
   iintro !> _HP
   wp_done
 
 /-! ## Closed adequacy theorem
 
-The point is *not* the postcondition value (it is just `Val.unit`),
-but rather that the proof goes through with resources split disjointly
-across the two forked threads. The shape of the proof is:
-
-```
-  HA : a ↦ 0   HB : b ↦ 0
-  ────────────────────────  wp_fork "writerProc" [a]
-  give HA to thread 1
-  parent retains HB
-  ────────────────────────  wp_fork "writerProc" [b]
-  give HB to thread 2
-  parent terminates
-```
-
-Both `isplitr` calls use the native `iframe` machinery: the spawned
-thread's obligation lists exactly the relevant points-to, and the
-parent continuation keeps the other.
--/
+Closes at `Val.unit`; the point is the *resource split*: separating
+conjunction routes HA and HB to disjoint forked threads. -/
 
 theorem progParAdd_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
@@ -116,53 +99,26 @@ theorem progParAdd_closed
     (n : Nat) (μ' : Machine)
     (htr : Machine.StepStarN progParAdd n (Machine.initial progParAdd) μ') :
     Machine.Adequate progParAdd μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progParAdd ?_ n μ' htr
-  start_closed_proof_with_heap progParAdd
-  -- main := a := alloc 0 ; b := alloc 0 ; fork writerProc(a) ; fork writerProc(b)
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_alloc_intro HA                             -- HA : aLoc ↦ 0
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_alloc_intro HB                             -- HB : bLoc ↦ 0
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq exposing first `fork`
-  iintro !>
-  -- First fork: route HA to the spawned thread, parent keeps HB.
-  iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-    _ "writerProc" [Expr.var "a"] writerProc
-    [Val.loc _]
-    [Stmt.fork "writerProc" [Expr.var "b"]] _ [] _
-    rfl (by agar_eval) rfl
+  adequacy_with_heap_intro progParAdd Val.unit
+  wp_pures
+  wp_alloc_intro HA
+  wp_pures
+  wp_alloc_intro HB
+  wp_pures
+  wp_fork_emp "writerProc" [Expr.var "a"] writerProc [Val.loc _]
+    [Stmt.fork "writerProc" [Expr.var "b"]]
   isplitl [HA]
-  · -- First forked thread: store 1 into a, consuming HA.
-    iintro !>
+  · iintro !>
     iapply writerProc_wp_body
     iexact HA
-  · -- Parent: still holds HB, queues the second fork.
-    iintro !>
-    wp_step                                     -- wp_skip_cons
-    iintro !>
-    iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-      _ "writerProc" [Expr.var "b"] writerProc
-      [Val.loc _]
-      [] _ [] _
-      rfl (by agar_eval) rfl
+  · iintro !>
+    wp_pures
+    wp_fork_emp "writerProc" [Expr.var "b"] writerProc [Val.loc _] []
     isplitl [HB]
-    · -- Second forked thread: store 1 into b, consuming HB.
-      iintro !>
+    · iintro !>
       iapply writerProc_wp_body
       iexact HB
-    · -- Parent terminates at Val.unit. HA, HB are gone — they were
-      -- handed off to the two spawned threads. This is the resource-
-      -- splitting witness: separating conjunction lets us route
-      -- disjoint sub-heaps to disjoint threads.
-      iintro !>
+    · iintro !>
       wp_done
 
 end Agar.Logic

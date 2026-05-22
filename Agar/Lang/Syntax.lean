@@ -54,6 +54,25 @@ mutual
         rfl
 end
 
+/-- Pointwise discriminator: any value distinct from `Val.int n` BEq-tests
+to `false`. This is the contrapositive companion to `val_beq_refl`, used
+to discharge the failure-side side condition of `wp_cas_*` whenever the
+expected value is a specific integer. Lives here (next to `Val.beq`)
+rather than in each example so that the 6+ specialised copies that
+existed across `Examples/` can all reduce to a single named lemma. -/
+theorem val_beq_int_false (n : Int) :
+    ∀ v : Val, v ≠ Val.int n → (v == Val.int n) = false := by
+  intro v hne
+  cases v with
+  | int i =>
+      show (i == n) = false
+      have : i ≠ n := fun h => hne (by cases h; rfl)
+      simp [this]
+  | bool _ => rfl
+  | loc _ => rfl
+  | unit => rfl
+  | struct _ => rfl
+
 inductive BinOp where
   | add | sub | mul | eq | lt | and | or
   deriving DecidableEq, Inhabited

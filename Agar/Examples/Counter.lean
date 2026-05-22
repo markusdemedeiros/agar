@@ -16,61 +16,20 @@ public import Agar.Iris.Heap
 public import Agar.Iris.Adequacy
 public import Agar.Iris.Tactics
 public import Agar.Iris.TacticsAtomic
+public import Agar.Iris.WpSpin
 public import Agar.Iris.Algebra.CounterRA
 
 @[expose] public section
 
-/-! # `progCounterCas` — CAS-based shared counter
+/-! # `progCounterCas` — CAS-based shared counter, observed by main
 
-A two-thread program that bumps a shared counter from `0` to `1` via a
-*single inline* CAS each, with no spinlock and no procedure-internal
-control flow:
-
-```
-casBumpProc(c) := ags( prev := cas c 0 1 )
-
-progCounterCas.main := ags(
-  c := alloc 0 ;
-  fork casBumpProc(c) ;
-  fork casBumpProc(c)
-)
-```
-
-### Disjunctive invariant
-
-The shared cell is protected by a *two-state* invariant:
-
-```
-inv N ((c ↦ Val.int 0 ∗ counter_auth γ 0 ∗ counter_frag γ 0)
-       ∨ (c ↦ Val.int 1 ∗ counter_auth γ 1 ∗ counter_frag γ 1))
-```
-
-The disjunction matches the two possible heap-values of `c` across the
-program's lifetime. The CAS-winner takes the LEFT disjunct (because
-the CAS succeeded with `vcur = 0`), drives both `(auth, frag)` from
-`(0, 0)` to `(1, 1)` via `counter_increment`, and closes into the
-RIGHT disjunct. The CAS-loser takes the RIGHT disjunct (`vcur = 1`),
-re-establishes RIGHT unchanged.
-
-### Why the disjunctive shape
-
-`wp_cas_atomic`'s closing-wand pair `(succ-wand) ∗ (fail-wand)` is
-joined by **separating** conjunction, so any non-duplicable ghost
-state (here `counter_auth γ`) can be placed in at most one wand's
-preconditions. Bundling the ghost with the heap value inside a
-disjunctive invariant routes the ghost-update entirely through the
-success branch and reproduces the disjunct's right side from the heap
-value alone in the failure branch — exactly the locking idiom from
-`progMiniMutexExcl_closed`, adapted to a counter.
-
-### Closed adequacy
-
-`progCounterCas_closed` discharges
-`Machine.Adequate progCounterCas μ' Val.unit` for any reachable `μ'`.
-Per-thread safety + main-thread `Val.unit` termination. The internal
-Iris invariant additionally guarantees, post-hoc, that the heap value
-`c` only ever takes the values `0` or `1` — but adequacy itself does
-not expose that meta-fact. -/
+Two threads bump a shared counter via a single inline `cas c 0 1`; main
+then spin-reads the counter and returns the observed value. The
+disjunctive invariant `counterInv` bundles the heap cell with both
+halves of an `Auth Nat` ghost (LEFT `= 0`, RIGHT `= 1`); the CAS-winner
+runs `counter_increment` through the success wand while the loser
+re-establishes RIGHT unchanged. Adequacy at `Val.int 1` — functional
+correctness: every terminating main thread observes the bumped value. -/
 
 namespace Agar.Logic
 
@@ -79,46 +38,6 @@ open CMRA UCMRA Auth CommMonoidLike
 
 variable {GF : BundledGFunctors.{0,0,0}} {hlc : Bool} [InvGS_gen hlc GF]
 variable {F : Type _} [UFraction F] [AgarG GF F]
-
-/-! ## Timeless instances for `counter_auth` / `counter_frag` -/
-
-section CounterTimeless
-
-variable {GF : BundledGFunctors.{0,0,0}} [CounterGpreS GF]
-
-private instance counter_auth_discreteE_cas (n : Nat) :
-    OFE.DiscreteE ((● n : Auth PNat Nat)) :=
-  Auth.auth_discrete (a := n) (dq := DFrac.own 1) inferInstance inferInstance
-
-private instance counter_frag_discreteE_cas (n : Nat) :
-    OFE.DiscreteE ((◯ n : Auth PNat Nat)) :=
-  Auth.frag_discrete (a := n) inferInstance
-
-private instance counter_auth_timeless_cas (γ : GName) (n : Nat) :
-    BI.Timeless (counter_auth (GF := GF) γ n) := by
-  unfold counter_auth; exact iOwn_timeless
-
-private instance counter_frag_timeless_cas (γ : GName) (n : Nat) :
-    BI.Timeless (counter_frag (GF := GF) γ n) := by
-  unfold counter_frag; exact iOwn_timeless
-
-end CounterTimeless
-
-/-- Pointwise discriminator: any value distinct from `Val.int 0`
-BEq-tests to `false`. Discharges `wp_cas_atomic`'s failure-side
-side condition. -/
-private theorem val_beq_int0_false :
-    ∀ v : Val, v ≠ Val.int 0 → (v == Val.int 0) = false := by
-  intro v hne
-  cases v with
-  | int i =>
-      show (i == 0) = false
-      have : i ≠ 0 := fun h => hne (by cases h; rfl)
-      simp [this]
-  | bool _ => rfl
-  | loc _ => rfl
-  | unit => rfl
-  | struct _ => rfl
 
 /-! ## The program -/
 
@@ -129,13 +48,20 @@ def casBumpProc : Proc where
   body   := ags( prev := cas c 0 1 )
 
 /-- The full program: allocate the shared counter, fork two contending
-workers, fall through to `Val.unit`. -/
+workers, spin-read until the counter is non-zero, return the value. -/
 def progCounterCas : Program where
   procs := fun n => if n = "casBumpProc" then some casBumpProc else none
   main  := ags(
-    c := alloc 0 ;
+    c      := alloc 0 ;
     fork casBumpProc(c) ;
-    fork casBumpProc(c)
+    fork casBumpProc(c) ;
+    done   := 0 ;
+    result := 0 ;
+    (while done = 0 do (
+      v := load c ;
+      if v = 0 then skip else (result := v ; done := 1)
+    )) ;
+    return result
   )
 
 /-- The invariant body: a two-state disjunction tying the heap value
@@ -151,11 +77,7 @@ private abbrev counterInv
           counter_auth (GF := GF) γ 1 ∗
           counter_frag (GF := GF) γ 1))
 
-/-! ## Worker thread spec
-
-The worker's body, run under `inv N (counterInv cLoc γ)`, closes WP at
-`emp`. The disjunctive invariant routes the (non-duplicable) ghost
-auth/frag update through the CAS-success branch only. -/
+/-! ## Worker thread spec (single CAS under `counterInv`) -/
 
 private theorem casBumpProc_wp_body
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F] [AgarG GF F]
@@ -170,120 +92,262 @@ private theorem casBumpProc_wp_body
   istart
   iintro #HI
   unfold casBumpProc
-  -- Body: `prev := cas c 0 1` (single statement; no `seq`).
-  -- Acquire-style CAS over the counter via the disjunctive-body opener.
   wp_cas_atomic_split HI
     (counterInv GF F cLoc γ) (Val.int 0) (Val.int 1)
-    val_beq_int0_false
+    (val_beq_int_false 0)
     with (⟨>HC, >Hauth, >Hfrag⟩ | ⟨>HC, >Hauth, >Hfrag⟩)
-  · -- Left disjunct: c ↦ 0, auth γ 0, frag γ 0. CAS will succeed.
+  · -- Open LEFT (c↦0, auth=frag=0); CAS succeeds, ghost step (0,0) ⤳ (1,1).
     imodintro
     iexists (Val.int 0)
     iframe HC
     isplitl [Hauth Hfrag]
-    · -- Success wand: vcur = 0, hold c ↦ Val.int 1.
-      iintro %_hv0 HC'
-      -- Bump (auth, frag): (0, 0) ↝ (1, 1) under `|==>`.
+    · iintro %_hv0 HC'
       imod (counter_increment (GF := GF) γ 0 0) $$ [Hauth Hfrag]
             with ⟨Hauth, Hfrag⟩
       · isplitl [Hauth] <;> iassumption
       imodintro
-      -- Close into the RIGHT disjunct (c ↦ 1, auth γ 1, frag γ 1).
       isplitl [HC' Hauth Hfrag]
-      · inext; iright
-        iframe HC'
-        iframe Hauth
-        iexact Hfrag
+      · inext; iright; iframe HC'; iframe Hauth; iexact Hfrag
       wp_done
-    · -- Failure wand: vcur = 0 was our value; vcur ≠ 0 contradiction.
-      iintro %hne _
-      exfalso; exact hne rfl
-  · -- Right disjunct: c ↦ 1, auth γ 1, frag γ 1. CAS will fail.
+    · cas_dead
+  · -- Open RIGHT (c↦1); CAS fails, re-close RIGHT with same witnesses.
     imodintro
     iexists (Val.int 1)
     iframe HC
     isplitr
-    · -- Success wand: vcur = 0 required; we have vcur = 1; contradiction.
-      iintro %heq _
-      exfalso; injection heq with h; omega
-    · -- Failure wand: vcur ≠ 0, points-to back at Val.int 1.
-      iintro %_hne HC'
+    · cas_dead
+    · iintro %_hne HC'
       imodintro
-      -- Close back into the RIGHT disjunct unchanged.
       isplitl [HC' Hauth Hfrag]
-      · inext; iright
-        iframe HC'
-        iframe Hauth
-        iexact Hfrag
+      · inext; iright; iframe HC'; iframe Hauth; iexact Hfrag
       wp_done
 
-/-! ## Closed adequacy theorem -/
-
-/-- **Closed adequacy** for `progCounterCas`: under any reachable
-machine trace, every thread is terminated or reducible, and a
-terminated main thread returns `Val.unit`. -/
 theorem progCounterCas_closed
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
     [InvGpreS GF] [Agar.Logic.AgarGpreS GF F] [CounterGpreS GF]
     (n : Nat) (μ' : Machine)
     (htr : Machine.StepStarN progCounterCas n
             (Machine.initial progCounterCas) μ') :
-    Machine.Adequate progCounterCas μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progCounterCas ?_ n μ' htr
-  start_closed_proof_with_heap progCounterCas
-  -- main := alloc "c" 0 ; fork casBumpProc(c) ; fork casBumpProc(c)
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_alloc
-  iintro !> %cLoc' HPC                          -- HPC : cLoc' ↦ 0
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq exposing first `fork`
-  iintro !>
-  -- Allocate the counter ghost (auth+frag at 0).
+    Machine.Adequate progCounterCas μ' (Val.int 1) := by
+  adequacy_with_heap_intro progCounterCas (Val.int 1)
+  wp_pures
+  wp_alloc_intro cLoc' HPC
+  wp_pures
   iapply fupd_wp
   imod (counter_alloc (GF := GF)) with ⟨%γ, Hauth, Hfrag⟩
   imodintro
-  -- Allocate the disjunctive invariant in the LEFT (c=0) disjunct.
-  iapply fupd_wp
-  imod (inv_alloc nroot CoPset.full (counterInv GF F cLoc' γ))
-        $$ [HPC Hauth Hfrag]
-        with HI
-  · inext; ileft
-    iframe HPC
-    iframe Hauth
-    iexact Hfrag
-  imodintro
-  ihave #HI := HI
-  -- First fork.
-  iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-    _ "casBumpProc" [Expr.var "c"] casBumpProc
-    [Val.loc _]
-    [Stmt.fork "casBumpProc" [Expr.var "c"]] _ [] _
-    rfl (by agar_eval) rfl
+  inv_alloc_with (counterInv GF F cLoc' γ) [HPC Hauth Hfrag] HI by
+    inext; ileft; iframe HPC; iframe Hauth; iexact Hfrag
+  wp_fork_emp "casBumpProc" [Expr.var "c"] casBumpProc [Val.loc _]
+    [ags(
+      fork casBumpProc(c) ;
+      done   := 0 ;
+      result := 0 ;
+      (while done = 0 do (
+        v := load c ;
+        if v = 0 then skip else (result := v ; done := 1)
+      )) ;
+      return result
+    )]
   isplitr
-  · -- First forked thread.
-    iintro !>
+  · iintro !>
     iapply casBumpProc_wp_body
     iexact HI
-  · -- Parent continuation: second `fork`, then fall-through.
-    iintro !>
-    wp_step                                     -- wp_skip_cons
-    iintro !>
-    iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-      _ "casBumpProc" [Expr.var "c"] casBumpProc
-      [Val.loc _]
-      [] _ [] _
-      rfl (by agar_eval) rfl
+  · iintro !>
+    wp_pures
+    wp_fork_emp "casBumpProc" [Expr.var "c"] casBumpProc [Val.loc _]
+      [ags(
+        done   := 0 ;
+        result := 0 ;
+        (while done = 0 do (
+          v := load c ;
+          if v = 0 then skip else (result := v ; done := 1)
+        )) ;
+        return result
+      )]
     isplitr
-    · -- Second forked thread.
-      iintro !>
+    · iintro !>
       iapply casBumpProc_wp_body
       iexact HI
-    · -- Final parent continuation: terminal skip at Val.unit.
-      iintro !>
-      wp_done
+    · iintro !>
+      wp_pures_no_loop
+      iapply (wp_spin (GF := GF) _ _ _ _ _ _ _
+        (J := fun env =>
+          iprop(inv nroot (counterInv GF F cLoc' γ) ∗
+            ⌜Expr.eval env (Expr.var "c") = some (.loc cLoc') ∧
+              ((env "done" = some (.int 0) ∧ env "result" = some (.int 0)) ∨
+               (env "done" = some (.int 1) ∧ env "result" = some (.int 1)))⌝)) _
+        (HSpec := fun env => ?Hspec))
+      case Hspec =>
+        iintro ⟨HIH, ⟨#HI, HJ⟩⟩
+        inext
+        icases HJ with %hpure
+        obtain ⟨hcLoc, hdr⟩ := hpure
+        rcases hdr with ⟨hdone, hresult⟩ | ⟨hdone, hresult⟩
+        · -- LEFT (unobserved): guard true, run body, load c, branch on c ∈ {0, 1}.
+          iapply wp_ite_true (heval := by simp [agar_eval, hdone]; rfl)
+          iintro !>
+          wp_lstep
+          wp_lstep
+          iapply wp_load_atomic (GF := GF) (F := F) (N := nroot)
+            (P := counterInv GF F cLoc' γ)
+            (Hsub := by rw [nclose_root])
+            (heL := hcLoc)
+          iframe HI
+          iintro HP
+          ihave HP := BI.later_or.mp $$ HP
+          icases HP with (⟨>HC, >Hauth, >Hfrag⟩ | ⟨>HC, >Hauth, >Hfrag⟩)
+          · -- c ↦ 0: load returns 0, take then-branch (skip), keep J in LEFT.
+            imodintro
+            iexists (Val.int 0)
+            isplitl [HC]
+            · iexact HC
+            iintro HC
+            imodintro
+            isplitl [HC Hauth Hfrag]
+            · inext; ileft; iframe HC; iframe Hauth; iexact Hfrag
+            wp_lstep
+            iapply wp_ite_true (heval := by agar_eval)
+            iintro !>
+            wp_lstep
+            ihave HIH := HIH $$ %(env.set "v" (Val.int 0))
+            iapply HIH
+            isplitl []
+            · iexact HI
+            ipure_intro
+            refine ⟨?_, Or.inl ⟨?_, ?_⟩⟩
+            · simpa [agar_eval] using hcLoc
+            · simpa [agar_eval] using hdone
+            · simpa [agar_eval] using hresult
+          · -- c ↦ 1: load returns 1, take else-branch, transition J LEFT → RIGHT.
+            imodintro
+            iexists (Val.int 1)
+            isplitl [HC]
+            · iexact HC
+            iintro HC
+            imodintro
+            isplitl [HC Hauth Hfrag]
+            · inext; iright; iframe HC; iframe Hauth; iexact Hfrag
+            wp_lstep
+            iapply wp_ite_false (heval := by agar_eval)
+            iintro !>
+            wp_lstep
+            iapply wp_assign (heval := by agar_eval)
+            iintro !>
+            wp_lstep
+            iapply wp_assign (heval := by agar_eval)
+            iintro !>
+            wp_lstep
+            ihave HIH := HIH $$ %(((env.set "v" (Val.int 1)).set "result"
+                (Val.int 1)).set "done" (Val.int 1))
+            iapply HIH
+            isplitl []
+            · iexact HI
+            ipure_intro
+            refine ⟨?_, Or.inr ⟨?_, ?_⟩⟩
+            · show Expr.eval _ (Expr.var "c") = _
+              exact hcLoc
+            · rfl
+            · rfl
+        · -- RIGHT (observed): guard false, exit loop, return `result = 1`.
+          iapply wp_ite_false (heval := by simp [agar_eval, hdone]; rfl)
+          iintro !>
+          wp_lstep
+          iapply (wp_ret_top _ _ (Expr.var "result") (Val.int 1) [] env _
+            (heval := by simp [agar_eval, hresult]))
+          ipure_intro; rfl
+      · -- Initial J at loop entry: LEFT disjunct.
+        isplitl []
+        · iexact HI
+        ipure_intro
+        refine ⟨?_, Or.inl ⟨?_, ?_⟩⟩ <;> agar_eval
+
+/-! ## `progCounterRace` — predicate-form adequacy: `result ∈ {0, 1}`
+
+Same CAS-bump workers as `progCounterCas`, but main reads the counter
+exactly once instead of spin-waiting. The observed value depends on
+whether any forked CAS has fired yet. `Machine.AdequateP` captures the
+race precisely. -/
+
+def progCounterRace : Program where
+  procs := fun n => if n = "casBumpProc" then some casBumpProc else none
+  main  := ags(
+    c := alloc 0 ;
+    fork casBumpProc(c) ;
+    fork casBumpProc(c) ;
+    v := load c ;
+    return v
+  )
+
+theorem progCounterRace_closedP
+    {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
+    [InvGpreS GF] [Agar.Logic.AgarGpreS GF F] [CounterGpreS GF]
+    (n : Nat) (μ' : Machine)
+    (htr : Machine.StepStarN progCounterRace n
+            (Machine.initial progCounterRace) μ') :
+    Machine.AdequateP progCounterRace μ'
+      (fun v => v = Val.int 0 ∨ v = Val.int 1) := by
+  adequacy_with_heap_intro_P progCounterRace
+    (fun v => v = Val.int 0 ∨ v = Val.int 1)
+  wp_pures
+  wp_alloc_intro cLoc' HPC
+  wp_pures
+  iapply fupd_wp
+  imod (counter_alloc (GF := GF)) with ⟨%γ, Hauth, Hfrag⟩
+  imodintro
+  inv_alloc_with (counterInv GF F cLoc' γ) [HPC Hauth Hfrag] HI by
+    inext; ileft; iframe HPC; iframe Hauth; iexact Hfrag
+  wp_fork_emp "casBumpProc" [Expr.var "c"] casBumpProc [Val.loc _]
+    [ags(
+      fork casBumpProc(c) ;
+      v := load c ;
+      return v
+    )]
+  isplitr
+  · iintro !>
+    iapply casBumpProc_wp_body
+    iexact HI
+  · iintro !>
+    wp_pures
+    wp_fork_emp "casBumpProc" [Expr.var "c"] casBumpProc [Val.loc _]
+      [ags(v := load c ; return v)]
+    isplitr
+    · iintro !>
+      iapply casBumpProc_wp_body
+      iexact HI
+    · iintro !>
+      wp_pures
+      iapply wp_load_atomic (GF := GF) (F := F) (N := nroot)
+        (P := counterInv GF F cLoc' γ)
+        (Hsub := by rw [nclose_root])
+        (heL := by agar_eval)
+      iframe HI
+      iintro HP
+      ihave HP := BI.later_or.mp $$ HP
+      icases HP with (⟨>HC, >Hauth, >Hfrag⟩ | ⟨>HC, >Hauth, >Hfrag⟩)
+      · imodintro
+        iexists (Val.int 0)
+        isplitl [HC]
+        · iexact HC
+        iintro HC
+        imodintro
+        isplitl [HC Hauth Hfrag]
+        · inext; ileft; iframe HC; iframe Hauth; iexact Hfrag
+        wp_lstep
+        iapply (wp_ret_top _ _ (Expr.var "v") (Val.int 0) [] _ _
+          (heval := by agar_eval))
+        ipure_intro; left; rfl
+      · imodintro
+        iexists (Val.int 1)
+        isplitl [HC]
+        · iexact HC
+        iintro HC
+        imodintro
+        isplitl [HC Hauth Hfrag]
+        · inext; iright; iframe HC; iframe Hauth; iexact Hfrag
+        wp_lstep
+        iapply (wp_ret_top _ _ (Expr.var "v") (Val.int 1) [] _ _
+          (heval := by agar_eval))
+        ipure_intro; right; rfl
 
 end Agar.Logic

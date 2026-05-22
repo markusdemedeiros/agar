@@ -77,9 +77,10 @@ the body fires.
 
 ### What's verified
 
-`progTicketLock_closed : Machine.Adequate progTicketLock μ' Val.unit`.
-Safety + `Val.unit` termination of the head thread; every `cas`,
-`load`, `store` is discharged by a real Iris WP rule against a real
+`progTicketLock_closed : Machine.Adequate progTicketLock μ' (Val.int 1)`.
+Safety + functional correctness: every terminating run returns
+`Val.int 1`, the post-release counter value. Every `cas`, `load`,
+`store` is discharged by a real Iris WP rule against a real
 `points_to`. -/
 
 /-- The single-thread ticket-lock demonstrator program. -/
@@ -102,7 +103,8 @@ def progTicketLock : Program where
       }
     } ;
     rn := load now ;
-    store now (rn + 1)
+    store now (rn + 1) ;
+    return (rn + 1)
   )
 
 theorem progTicketLock_closed
@@ -111,30 +113,15 @@ theorem progTicketLock_closed
     (n : Nat) (μ' : Machine)
     (htr : Machine.StepStarN progTicketLock n
             (Machine.initial progTicketLock) μ') :
-    Machine.Adequate progTicketLock μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progTicketLock ?_ n μ' htr
-  start_closed_proof_with_heap progTicketLock
-  -- main: alloc next ; alloc now ; doneA:=0 ; whileA ; doneB:=0 ; whileB ;
-  --       rn:=load now ; store now (rn+1)
-  wp_step; iintro !>
-  iapply wp_alloc _ _ _ _ _ _ _ _ _ (by agar_eval)
-  iintro !> %lNext HPnext
-  wp_step; iintro !>
-  wp_step; iintro !>
-  iapply wp_alloc _ _ _ _ _ _ _ _ _ (by agar_eval)
-  iintro !> %lNow HPnow
-  wp_step; iintro !>
-  wp_step; iintro !>
-  wp_step; iintro !>                            -- doneA := 0
-  wp_step; iintro !>
-  wp_step; iintro !>
-  -- ====== LOOP A: FAA-via-CAS on `next` ======
-  -- I env disjunction:
-  --   LEFT  : next ↦ 0 ∗ now ↦ 0 ∗ "doneA"=0, "next"=lNext, "now"=lNow.
-  --   RIGHT : next ↦ 1 ∗ now ↦ 0 ∗ "doneA"=1, "t"=0, "next"=lNext, "now"=lNow.
-  -- In both cases the guard (doneA=0) evaluates to some Boolean.
+    Machine.Adequate progTicketLock μ' (Val.int 1) := by
+  adequacy_with_heap_intro progTicketLock (Val.int 1)
+  wp_pures
+  wp_alloc_intro lNext HPnext
+  wp_pures
+  wp_alloc_intro lNow HPnow
+  wp_pures_no_loop
+  -- LOOP A: FAA-via-CAS on `next`. LEFT = ticket unclaimed; RIGHT = claimed.
+  -- Single-threaded, so we hold the points-to inside `I` directly (no `inv`).
   iapply (wp_spin_invariant _ _ _ _ _ _ _
     (I := fun env =>
       iprop(
@@ -155,52 +142,38 @@ theorem progTicketLock_closed
     (HBody := fun env => ?HBodyA)
     (HExit := fun env => ?HExitA))
   case HGuardA =>
-    -- Both disjuncts yield a definite guard value.
     istart
     iintro HI
     icases HI with (⟨HPn, HPnw, %hL⟩ | ⟨HPn, HPnw, %hR⟩)
     · isplitl [HPn HPnw]
       · ileft; iframe HPn; iframe HPnw; ipure_intro; exact hL
       ipure_intro
-      refine ⟨true, ?_⟩
-      show (env "doneA").bind _ = _
-      rw [hL.2.2]
-      rfl
+      refine ⟨true, ?_⟩; simp [agar_eval, hL.2.2]; rfl
     · isplitl [HPn HPnw]
       · iright; iframe HPn; iframe HPnw; ipure_intro; exact hR
       ipure_intro
-      refine ⟨false, ?_⟩
-      show (env "doneA").bind _ = _
-      rw [hR.2.2.1]
-      rfl
+      refine ⟨false, ?_⟩; simp [agar_eval, hR.2.2.1]; rfl
   case HBodyA =>
-    -- Guard is true ⇒ we're in the LEFT disjunct (in the RIGHT disjunct
-    -- doneA is bound to 1 ⇒ guard is false ⇒ contradiction).
     iintro ⟨HIH, ⟨%hgtrue, HI⟩⟩
     icases HI with (⟨HPn, HPnw, %hL⟩ | ⟨HPn, HPnw, %hR⟩)
-    · -- LEFT disjunct: env "next" = some lNext, env "now" = some lNow, doneA = 0.
-      obtain ⟨hnext, hnow, _⟩ := hL
-      iapply wp_seq; iintro !>
+    · obtain ⟨hnext, hnow, _⟩ := hL
+      wp_lstep
       wp_load_direct HPn (by exact hnext)
-      wp_step; iintro !>
-      wp_step; iintro !>
+      wp_lstep
+      wp_lstep
       iapply wp_cas_succ (GF := GF) (F := F)
         (vO := Val.int 0) (vN := Val.int 1)
-        (heL := by
-          show (env.set "t" (Val.int 0)) "next" = some (Val.loc lNext)
-          simp [Env.set]; exact hnext)
-        (heO := by
-          show (env.set "t" (Val.int 0)) "t" = some (Val.int 0)
-          simp [Env.set])
+        (heL := by simpa [agar_eval] using hnext)
+        (heO := by agar_eval)
         (heN := by agar_eval)
         (heq := by decide)
       iframe HPn
       iintro !> HPn
-      wp_step; iintro !>
+      wp_lstep
       iapply wp_ite_true (heval := by agar_eval)
       iintro !>
-      wp_step; iintro !>
-      wp_step; iintro !>
+      wp_lstep
+      wp_lstep
       ihave HIH := HIH $$ %(((env.set "t" (Val.int 0)).set "r" (Val.int 0)).set "doneA" (Val.int 1))
       iapply HIH
       iright
@@ -208,35 +181,22 @@ theorem progTicketLock_closed
       iframe HPnw
       ipure_intro
       refine ⟨?_, ?_, ?_, ?_⟩
-      · simp [Env.set]; exact hnext
-      · simp [Env.set]; exact hnow
-      · simp [Env.set]
-      · simp [Env.set]
-    -- RIGHT disjunct: doneA = 1 ⇒ guard false ⇒ contradicts hgtrue.
+      · simpa [agar_eval] using hnext
+      · simpa [agar_eval] using hnow
+      · agar_eval
+      · agar_eval
+    -- RIGHT disjunct: doneA = 1 contradicts hgtrue (`doneA = 0` evaluates false).
     exfalso
-    revert hgtrue
-    show (env "doneA").bind _ = _ → _
-    rw [hR.2.2.1]
-    intro h; injection h with h; injection h with h; cases h
+    simp [agar_eval, hR.2.2.1] at hgtrue
+    exact absurd hgtrue (by decide)
   case HExitA =>
     iintro ⟨%hgfalse, HI⟩
     icases HI with (⟨_HPn, _HPnw, %hL⟩ | ⟨HPn, HPnw, %hR⟩)
-    · -- LEFT: doneA=0, guard would be true, contradiction.
-      exfalso
-      revert hgfalse
-      show (env "doneA").bind _ = _ → _
-      rw [hL.2.2]
-      intro h; injection h with h; injection h with h; cases h
-    -- RIGHT: HPn : next ↦ 1, HPnw : now ↦ 0, hR : env "t"=some 0, env "now"=some lNow.
+    · exact absurd hgfalse (by simp [agar_eval, hL.2.2]; decide)
     obtain ⟨_hnext, hnow, _, ht⟩ := hR
-    -- Continuation: doneB := 0 ; whileB ; rn := load now ; store now (rn+1)
-    wp_step; iintro !>                          -- skip_cons
-    wp_step; iintro !>                          -- wp_seq
-    wp_step; iintro !>                          -- wp_assign (doneB := 0)
-    wp_step; iintro !>                          -- skip_cons
-    wp_step; iintro !>                          -- wp_seq (expose whileB)
-    -- ====== LOOP B: spin on now == t ======
-    -- I' env := now ↦ 0 ∗ "now"=lNow ∗ "t"=0 ∗ (env "doneB" ∈ {some 0, some 1}).
+    wp_pures_no_loop
+    -- LOOP B: spin on `now == t`. LEFT = pre-check; RIGHT = checked.
+    -- `now` stays at 0 throughout; protocol state lives in `doneB`.
     iapply (wp_spin_invariant _ _ _ _ _ _ _
       (I := fun env =>
         iprop(
@@ -256,83 +216,69 @@ theorem progTicketLock_closed
       istart
       iintro HI
       icases HI with (⟨HPnw, %hL⟩ | ⟨HPnw, %hR⟩)
-      · isplitl [HPnw]
+      · -- LEFT: doneB = 0 ⇒ guard is true.
+        isplitl [HPnw]
         · ileft; iframe HPnw; ipure_intro; exact hL
         ipure_intro; refine ⟨true, ?_⟩
-        show (env "doneB").bind _ = _
-        rw [hL.2.2]; rfl
-      · isplitl [HPnw]
+        simp [agar_eval, hL.2.2]; rfl
+      · -- RIGHT: doneB = 1 ⇒ guard is false.
+        isplitl [HPnw]
         · iright; iframe HPnw; ipure_intro; exact hR
         ipure_intro; refine ⟨false, ?_⟩
-        show (env "doneB").bind _ = _
-        rw [hR.2]; rfl
+        simp [agar_eval, hR.2]; rfl
     case HBodyB =>
       iintro ⟨HIH, ⟨%hgtrue, HI⟩⟩
       icases HI with (⟨HPnw, %hL⟩ | ⟨HPnw, %hR⟩)
-      · -- LEFT: env "now"=lNow, env "t"=0, env "doneB"=0.
-        obtain ⟨hnow, ht, _⟩ := hL
-        iapply wp_seq; iintro !>
+      · obtain ⟨hnow, ht, _⟩ := hL
+        wp_lstep
         wp_load_direct HPnw (by exact hnow)
-        wp_step; iintro !>
-        iapply wp_ite_true
-          (heval := by
-            show Expr.eval _ _ = _
-            simp [Expr.eval, Env.set, BinOp.eval]
-            rw [ht]
-            rfl)
+        wp_lstep
+        -- Loaded `nv = 0`; `t = 0` from LEFT, so guard `t = nv` is true.
+        iapply wp_ite_true (heval := by simp [agar_eval, ht]; rfl)
         iintro !>
-        wp_step; iintro !>
-        wp_step; iintro !>
+        wp_lstep
+        wp_lstep
         ihave HIH := HIH $$ %((env.set "nv" (Val.int 0)).set "doneB" (Val.int 1))
         iapply HIH
         iright
         iframe HPnw
         ipure_intro
         refine ⟨?_, ?_⟩
-        · simp [Env.set]; exact hnow
-        · simp [Env.set]
-      -- RIGHT: doneB = 1 ⇒ guard false ⇒ contradicts hgtrue.
+        · simpa [agar_eval] using hnow
+        · agar_eval
+      -- RIGHT disjunct has `doneB = 1`, contradicting hgtrue.
       exfalso
-      revert hgtrue
-      show (env "doneB").bind _ = _ → _
-      rw [hR.2]; intro h; injection h with h; injection h with h; cases h
+      simp [agar_eval, hR.2] at hgtrue
+      exact absurd hgtrue (by decide)
     case HExitB =>
       iintro ⟨%hgfalse, HI⟩
       icases HI with (⟨_HPnw, %hL⟩ | ⟨HPnw, %hR⟩)
-      · exfalso
-        revert hgfalse
-        show (env "doneB").bind _ = _ → _
-        rw [hL.2.2]; intro h; injection h with h; injection h with h; cases h
+      · exact absurd hgfalse (by simp [agar_eval, hL.2.2]; decide)
       obtain ⟨hnow, _⟩ := hR
-      -- Continuation: rn := load now ; store now (rn+1)
-      wp_step; iintro !>
-      wp_step; iintro !>
+      wp_pures
       wp_load_direct HPnw (by exact hnow)
-      wp_step; iintro !>
+      wp_lstep
+      wp_lstep
       iapply wp_store (GF := GF) (F := F)
-        (heL := by
-          show (env.set "rn" (Val.int 0)) "now" = _
-          simp [Env.set]; exact hnow)
+        (heL := by simpa [agar_eval] using hnow)
         (heV := by agar_eval)
       iframe HPnw
       iintro !> _HPnw
-      wp_done
-    · -- Initial I' at the env entering loop B.
-      -- env here is `((env_after_loopA).set "doneB" (Val.int 0))`-ish.
-      -- Use LEFT disjunct: now ↦ 0 ∗ pure(now=lNow, t=0, doneB=0).
-      ileft
+      wp_lstep
+      iapply (wp_ret_top _ _ (Expr.bin BinOp.add (Expr.var "rn") (Expr.val (Val.int 1)))
+        (Val.int 1) [] _ _ (heval := by agar_eval))
+      ipure_intro; rfl
+    · ileft
       iframe HPnw
       ipure_intro
       refine ⟨?_, ?_, ?_⟩
-      · show Env.set _ _ _ "now" = _; simp [Env.set]; exact hnow
-      · show Env.set _ _ _ "t" = _; simp [Env.set]; exact ht
-      · show Env.set _ _ _ "doneB" = _; simp [Env.set]
-  · -- Initial I at the env entering loop A. LEFT disjunct.
-    ileft
+      · simpa [agar_eval] using hnow
+      · simpa [agar_eval] using ht
+      · agar_eval
+  · ileft
     iframe HPnext
     iframe HPnow
     ipure_intro
-    refine ⟨?_, ?_, ?_⟩
-    all_goals (show Env.set _ _ _ _ = _; simp [Env.set])
+    refine ⟨?_, ?_, ?_⟩ <;> agar_eval
 
 end Agar.Logic

@@ -155,7 +155,6 @@ theorem cswap_spec
        wp procs fork_post E (cswap_post x cont env stack) Φ))
     ⊢ wp procs fork_post E
         (⟨.call x "cswap" [eA, eB], cont, env, stack, none⟩ : Thread) Φ := by
-  -- Discharge the procedure call.
   have hargs : evalArgs env [eA, eB] = some [.loc lA, .loc lB] := by
     simp [agar_eval, hA, hB]
   have harity : ([Val.loc lA, Val.loc lB]).length = cswap.params.length := rfl
@@ -163,25 +162,21 @@ theorem cswap_spec
   iapply (wp_call procs fork_post x "cswap" [eA, eB]
             cswap [.loc lA, .loc lB] cont env stack Φ hproc hargs harity)
   iintro !>
-  -- Body of `cswap` under `bindParams ["a","b"] [Val.loc lA, Val.loc lB]`.
   unfold cswap
-  -- Eval facts under the body's bound env (and its successive extensions).
   have hEvalA : Expr.eval (bindParams ["a", "b"] [Val.loc lA, Val.loc lB])
                   (age(a)) = some (.loc lA) := by simp [agar_eval]
   have hEvalB : Expr.eval (bindParams ["a", "b"] [Val.loc lA, Val.loc lB])
                   (age(b)) = some (.loc lB) := by simp [agar_eval]
-  wp_step                                -- wp_seq
+  wp_step
   iintro !>
-  -- Load a → va.
   wp_load_direct HA hEvalA
   have hEvalB₁ : Expr.eval ((bindParams ["a", "b"] [Val.loc lA, Val.loc lB]).set
                   "va" (Val.int va)) (age(b)) = some (.loc lB) := by
     simp [agar_eval]
-  wp_step                                -- wp_skip_cons
+  wp_step
   iintro !>
-  wp_step                                -- wp_seq
+  wp_step
   iintro !>
-  -- Load b → vb.
   wp_load_direct HB hEvalB₁
   have hEvalVA₂ : Expr.eval
       (((bindParams ["a", "b"] [Val.loc lA, Val.loc lB]).set "va"
@@ -199,11 +194,10 @@ theorem cswap_spec
       (((bindParams ["a", "b"] [Val.loc lA, Val.loc lB]).set "va"
             (Val.int va)).set "vb" (Val.int vb))
       (age(b)) = some (.loc lB) := by simp [agar_eval]
-  wp_step                                -- wp_skip_cons
+  wp_step
   iintro !>
-  -- `if va < vb then skip else (store a vb ; store b va)` at top of cont.
   by_cases hlt : va < vb
-  · -- Already sorted: take "self-store" branch — `store a va ; store b vb`.
+  · -- Already sorted: take then-branch (self-store, no swap).
     have hGuard : Expr.eval
         (((bindParams ["a", "b"] [Val.loc lA, Val.loc lB]).set "va"
               (Val.int va)).set "vb" (Val.int vb))
@@ -211,15 +205,12 @@ theorem cswap_spec
       simp [agar_eval, hlt]
     iapply (wp_ite_true procs fork_post _ _ _ _ _ _ _ hGuard)
     iintro !>
-    wp_step                              -- wp_seq
+    wp_step
     iintro !>
-    -- Store va into a (no-op semantically).
     wp_store_direct HA hEvalA₂ hEvalVA₂
-    wp_step                              -- wp_skip_cons
+    wp_step
     iintro !>
-    -- Store vb into b (no-op semantically).
     wp_store_direct HB hEvalB₂ hEvalVB₂
-    -- `if va < vb then va else vb` reduces to `va` under hlt.
     cases hcont : cont with
     | nil =>
       iapply (wp_skip_frame_nil (E := E) procs fork_post _ x env stack Φ)
@@ -257,7 +248,7 @@ theorem cswap_spec
     wp_step                              -- wp_skip_cons
     iintro !>
     wp_store_direct HB hEvalB₂ hEvalVA₂
-    -- `if va < vb then va else vb` reduces to `vb` under ¬hlt; symmetric.
+    -- Symmetric to the then-branch under `¬hlt`.
     cases hcont : cont with
     | nil =>
       iapply (wp_skip_frame_nil (E := E) procs fork_post _ x env stack Φ)
@@ -334,25 +325,15 @@ theorem progIsort3_closed
   iexists iprop(emp : IProp GF)
   iframe HA0
   unfold Thread.initial progIsort3
-  -- Three allocations.
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_alloc_intro HA                             -- aLoc ↦ v1
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_alloc_intro HB                             -- bLoc ↦ v2
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_alloc_intro HC                             -- cLoc ↦ v3
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  -- First cswap(a, b): drives (v1, v2) → (min v1 v2, max v1 v2).
-  wp_step                                       -- wp_seq
-  iintro !>
+  -- alloc a, b, c
+  wp_pures
+  wp_alloc_intro HA
+  wp_pures
+  wp_alloc_intro HB
+  wp_pures
+  wp_alloc_intro HC
+  wp_pures
+  -- cswap(a, b): (v1, v2) → (min v1 v2, max v1 v2)
   iapply (cswap_spec (E := ⊤) _ iprop(emp : IProp GF) _ _ v1 v2 "tmp1"
             (.var "a") (.var "b") _ _ _ _ rfl (by agar_eval) (by agar_eval))
   iframe HA
@@ -360,11 +341,8 @@ theorem progIsort3_closed
   iintro %vA' %vB' %heqA %heqB HA HB
   subst heqA; subst heqB
   unfold cswap_post; simp only
-  -- After cswap1: HA : a ↦ min v1 v2, HB : b ↦ max v1 v2.
-  wp_step                                       -- wp_seq
-  iintro !>
-  -- Second cswap(b, c): drives (max v1 v2, v3) → (min(max v1 v2) v3,
-  --                                                max(max v1 v2) v3).
+  wp_pures
+  -- cswap(b, c): (max v1 v2, v3) → (min ..., max ...)
   iapply (cswap_spec (E := ⊤) _ iprop(emp : IProp GF) _ _ (max v1 v2) v3 "tmp2"
             (.var "b") (.var "c") _ _ _ _ rfl (by agar_eval) (by agar_eval))
   iframe HB
@@ -372,9 +350,8 @@ theorem progIsort3_closed
   iintro %vA' %vB' %heqA %heqB HB HC
   subst heqA; subst heqB
   unfold cswap_post; simp only
-  wp_step                                       -- wp_seq
-  iintro !>
-  -- Third cswap(a, b): now the (a, b) pair is (min v1 v2, min(max v1 v2) v3).
+  wp_pures
+  -- cswap(a, b): finalises (a, b) → (min3, med3)
   iapply (cswap_spec (E := ⊤) _ iprop(emp : IProp GF) _ _
             (min v1 v2) (min (max v1 v2) v3) "tmp3"
             (.var "a") (.var "b") _ _ _ _ rfl (by agar_eval) (by agar_eval))
@@ -383,8 +360,7 @@ theorem progIsort3_closed
   iintro %vA' %vB' %heqA %heqB HA HB
   subst heqA; subst heqB
   unfold cswap_post; simp only
-  -- Now: HA : a ↦ min3 v1 v2 v3, HB : b ↦ med3 v1 v2 v3, HC : c ↦ max3 v1 v2 v3.
-  -- Rewrite to the canonical sorted form.
+  -- HA : min3 v1 v2 v3 ; HB : med3 ; HC : max3. Re-express via canonical forms.
   have hMin : min (min v1 v2) (min (max v1 v2) v3) = min3 v1 v2 v3 := by
     simp only [min3]
     rcases Int.le_total v1 v2 with hab | hab <;>
@@ -403,18 +379,12 @@ theorem progIsort3_closed
       rcases Int.le_total v2 v3 with hbc | hbc <;>
       rcases Int.le_total v1 v3 with hac | hac <;>
       simp [Int.min_def, Int.max_def, hab, hbc, hac] <;> omega
-  -- Continue: load v b ; return v.
-  wp_step                                       -- wp_seq
-  iintro !>
-  -- Rewrite HB's value to its canonical `med3` form by exposing
-  -- the wp-goal via the wp-rule's stated points-to value.
+  wp_pures
   iapply wp_load _ _ _ _ _ (Val.int (med3 v1 v2 v3)) _ _ _ _ (by agar_eval)
   isplitl [HB]
   · rw [← hMed]; iexact HB
   iintro !> HB
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  -- return v.
+  wp_pures
   iapply wp_ret_top _ _ _ (Val.int (med3 v1 v2 v3)) _ _ _ (by agar_eval)
   itrivial
 

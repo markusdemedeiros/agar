@@ -28,7 +28,9 @@
 --   * `WpSpin`        — additional spin-loop rules.
 --   * `Tactics`       — proof-mode macros (`wp_pures`, `wp_call <ident>`,
 --                       `wp_load`, `wp_store`, `wp_alloc`, `wp_cas_*`,
---                       `wp_apply_*_spec`, …).
+--                       `wp_apply_*_spec`, `heap_adequacy_intro`,
+--                       `start_closed_proof_with_heap`,
+--                       `adequacy_with_heap_intro`, …).
 --   * `TacticsAtomic` — atomic-triple tactics (`wp_cas_atomic_split`).
 --   * `Adequacy`      — `Machine.Adequate`, the closed-adequacy theorem
 --                       `wp_strong_adequacy`, `heap_adequacy_intro`.
@@ -100,6 +102,8 @@ public import Agar.Examples.TreiberPush
 public import Agar.Examples.ReaderCount
 public import Agar.Examples.Peterson
 public import Agar.Examples.Readback
+public import Agar.Examples.StackPushPop
+public import Agar.Examples.StackReverse
 
 -- High-level `implements` predicate tying closed adequacy theorems
 -- to mathematical functions.

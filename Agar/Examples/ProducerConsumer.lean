@@ -21,61 +21,12 @@ public import Agar.Iris.TacticsAtomic
 
 /-! # `progProdCon` — single-slot bounded buffer (producer/consumer)
 
-A two-thread *asymmetric* concurrent program: one thread produces a
-value into a shared slot, the other consumes it. Synchronisation is
-encoded in the slot itself by a sentinel value (`0` = empty, `42` =
-full):
-
-```
-producerProc(slot) := prev := cas slot 0 42
-consumerProc(slot) := prev := cas slot 42 0
-
-progProdCon.main := ags(
-  slot := alloc 0 ;
-  fork producerProc(slot) ;
-  fork consumerProc(slot)
-)
-```
-
-### Disjunctive two-state invariant
-
-Like `progCounterCas`, the slot is protected by a two-state invariant
-matching the two possible heap values:
-
-```
-inv N ((slot ↦ Val.int 0)        -- EMPTY
-      ∨ (slot ↦ Val.int 42))     -- FULL
-```
-
-Unlike `progCounterCas` (where both threads do the same CAS 0→1), here
-the threads CAS in *opposite directions*:
-
-* **Producer** does `cas slot 0 42` — transitions EMPTY ↦ FULL.
-* **Consumer** does `cas slot 42 0` — transitions FULL ↦ EMPTY.
-
-Each thread's CAS-success branch swaps the disjunct; each CAS-failure
-branch re-establishes the disjunct it observed unchanged. The proof
-demonstrates that the two asymmetric atomic transitions compose
-cleanly through a single disjunctive heap invariant.
-
-### What we do *not* prove
-
-Closed adequacy here yields only safety + `Val.unit` termination of
-the head thread. A *functional* spec (the consumer actually witnesses
-`42` once the producer fires) would need ghost tokens routing the
-consumer's "I read the data" obligation through the producer's
-CAS-success branch — the asymmetric-token strengthening discussed in
-the Mutex / Counter examples. We deliberately defer that here: at the
-safety level, the disjunctive heap invariant alone is sound, and this
-file is the reference for the *asymmetric two-direction CAS* idiom.
-
-### Closed adequacy
-
-`progProdCon_closed` discharges `Machine.Adequate progProdCon μ'
-Val.unit` for any reachable `μ'`. The Iris invariant additionally
-guarantees, post-hoc, that the heap value at `slot` only ever takes
-the values `0` or `42` — adequacy itself does not expose that
-meta-fact. -/
+Asymmetric pair: producer CAS `slot 0 42` (EMPTY → FULL), consumer
+CAS `slot 42 0` (FULL → EMPTY). The disjunctive invariant `slotInv` is
+the canonical two-state shape; `progProdCon_closed` proves the safety-
+only spec at `Val.unit`. `progProdConRace_closedP` extends to the
+predicate-form spec `result ∈ {0, 42}` via the same invariant — no
+extra ghost tokens needed. -/
 
 namespace Agar.Logic
 
@@ -83,38 +34,6 @@ open Iris Iris.BI Iris.OFE Iris.COFE Iris.Std.LawfulSet
 
 variable {GF : BundledGFunctors.{0,0,0}} {hlc : Bool} [InvGS_gen hlc GF]
 variable {F : Type _} [UFraction F] [AgarG GF F]
-
-/-! ## CAS-failure-branch discriminators
-
-Two pointwise lemmas closing the failure side of `wp_cas_atomic`: any
-value distinct from the expected CAS-old reads as `false` under
-`Val.beq`. -/
-
-private theorem val_beq_int0_false :
-    ∀ v : Val, v ≠ Val.int 0 → (v == Val.int 0) = false := by
-  intro v hne
-  cases v with
-  | int i =>
-      show (i == 0) = false
-      have : i ≠ 0 := fun h => hne (by cases h; rfl)
-      simp [this]
-  | bool _ => rfl
-  | loc _ => rfl
-  | unit => rfl
-  | struct _ => rfl
-
-private theorem val_beq_int42_false :
-    ∀ v : Val, v ≠ Val.int 42 → (v == Val.int 42) = false := by
-  intro v hne
-  cases v with
-  | int i =>
-      show (i == 42) = false
-      have : i ≠ 42 := fun h => hne (by cases h; rfl)
-      simp [this]
-  | bool _ => rfl
-  | loc _ => rfl
-  | unit => rfl
-  | struct _ => rfl
 
 /-! ## The program -/
 
@@ -150,9 +69,7 @@ private abbrev slotInv
     points_to (GF := GF) (F := F) sLoc (Val.int 0)
       ∨ points_to (GF := GF) (F := F) sLoc (Val.int 42))
 
-/-! ## Producer-thread WP body
-
-Single-CAS EMPTY → FULL under the disjunctive invariant. -/
+/-! ## Producer-thread WP body (single CAS `0 → 42`, EMPTY → FULL) -/
 
 private theorem producerProc_wp_body
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F] [AgarG GF F]
@@ -167,45 +84,20 @@ private theorem producerProc_wp_body
   istart
   iintro #HI
   unfold producerProc
-  -- Body: `prev := cas slot 0 42` (single statement; no `seq`).
   wp_cas_atomic_split HI
     (slotInv GF F sLoc) (Val.int 0) (Val.int 42)
-    val_beq_int0_false
+    (val_beq_int_false 0)
     with (>HS | >HS)
-  · -- LEFT disjunct: slot ↦ 0. CAS succeeds.
-    imodintro
-    iexists (Val.int 0)
-    iframe HS
-    isplitl []
-    · -- Success wand: close into RIGHT (slot ↦ 42).
-      iintro %_hv0 HS'
-      imodintro
-      isplitl [HS']
-      · inext; iright; iexact HS'
-      wp_done
-    · -- Failure wand: vcur = 0 was our choice → unreachable.
-      iintro %hne _
-      exfalso; exact hne rfl
-  · -- RIGHT disjunct: slot ↦ 42. CAS fails (42 ≠ 0).
-    imodintro
-    iexists (Val.int 42)
-    iframe HS
-    isplitr
-    · -- Success wand: vcur = 0 required; we have vcur = 42; contradiction.
-      iintro %heq _
-      exfalso; injection heq with h; omega
-    · -- Failure wand: close back into RIGHT unchanged.
-      iintro %_hne HS'
-      imodintro
-      isplitl [HS']
-      · inext; iright; iexact HS'
-      wp_done
+  · -- Open under LEFT (EMPTY). CAS succeeds.
+    cas_succeed_with (Val.int 0) HS
+    · inv_close_right HS'; wp_done   -- post-CAS slot ↦ 42; close into FULL
+    · cas_dead
+  · -- Open under RIGHT (FULL). CAS fails (42 ≠ 0).
+    cas_fail_with (Val.int 42) HS
+    · cas_dead
+    · inv_close_right HS'; wp_done   -- re-close FULL with heap we read
 
-/-! ## Consumer-thread WP body
-
-Single-CAS FULL → EMPTY under the same disjunctive invariant. The
-case-split is *symmetric* to the producer's: success is now possible
-in the RIGHT disjunct (slot ↦ 42), failure in the LEFT (slot ↦ 0). -/
+/-! ## Consumer-thread WP body (mirror: CAS `42 → 0`, FULL → EMPTY) -/
 
 private theorem consumerProc_wp_body
     {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F] [AgarG GF F]
@@ -220,39 +112,18 @@ private theorem consumerProc_wp_body
   istart
   iintro #HI
   unfold consumerProc
-  -- Body: `prev := cas slot 42 0`.
   wp_cas_atomic_split HI
     (slotInv GF F sLoc) (Val.int 42) (Val.int 0)
-    val_beq_int42_false
+    (val_beq_int_false 42)
     with (>HS | >HS)
-  · -- LEFT disjunct: slot ↦ 0. CAS fails (0 ≠ 42).
-    imodintro
-    iexists (Val.int 0)
-    iframe HS
-    isplitr
-    · -- Success wand: vcur = 42 required; we have vcur = 0; contradiction.
-      iintro %heq _
-      exfalso; injection heq with h; omega
-    · -- Failure wand: close back into LEFT unchanged.
-      iintro %_hne HS'
-      imodintro
-      isplitl [HS']
-      · inext; ileft; iexact HS'
-      wp_done
-  · -- RIGHT disjunct: slot ↦ 42. CAS succeeds.
-    imodintro
-    iexists (Val.int 42)
-    iframe HS
-    isplitl []
-    · -- Success wand: close into LEFT (slot ↦ 0).
-      iintro %_hv42 HS'
-      imodintro
-      isplitl [HS']
-      · inext; ileft; iexact HS'
-      wp_done
-    · -- Failure wand: vcur = 42 was our choice → unreachable.
-      iintro %hne _
-      exfalso; exact hne rfl
+  · -- Open under LEFT (EMPTY). CAS fails (0 ≠ 42).
+    cas_fail_with (Val.int 0) HS
+    · cas_dead
+    · inv_close_left HS'; wp_done    -- re-close EMPTY with heap we read
+  · -- Open under RIGHT (FULL). CAS succeeds.
+    cas_succeed_with (Val.int 42) HS
+    · inv_close_left HS'; wp_done    -- post-CAS slot ↦ 0; close into EMPTY
+    · cas_dead
 
 /-! ## Closed adequacy theorem -/
 
@@ -266,33 +137,13 @@ theorem progProdCon_closed
     (htr : Machine.StepStarN progProdCon n
             (Machine.initial progProdCon) μ') :
     Machine.Adequate progProdCon μ' Val.unit := by
-  unfold Machine.Adequate Machine.Safe Machine.MainReturns
-  refine wp_strong_adequacy_bupd (GF := GF)
-    (φ := fun v => v = Val.unit) progProdCon ?_ n μ' htr
-  start_closed_proof_with_heap progProdCon
-  -- main := alloc "slot" 0 ; fork producerProc(slot) ; fork consumerProc(slot)
-  wp_step                                       -- wp_seq
-  iintro !>
-  wp_alloc
-  iintro !> %sLoc' HPS                          -- HPS : sLoc' ↦ 0
-  wp_step                                       -- wp_skip_cons
-  iintro !>
-  wp_step                                       -- wp_seq exposing first `fork`
-  iintro !>
-  -- Allocate the disjunctive invariant in the LEFT (empty) disjunct.
-  iapply fupd_wp
-  imod (inv_alloc nroot CoPset.full (slotInv GF F sLoc'))
-        $$ [HPS]
-        with HI
-  · inext; ileft; iexact HPS
-  imodintro
-  ihave #HI := HI
-  -- First fork (producer).
-  iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-    _ "producerProc" [Expr.var "slot"] producerProc
-    [Val.loc _]
-    [Stmt.fork "consumerProc" [Expr.var "slot"]] _ [] _
-    rfl (by agar_eval) rfl
+  adequacy_with_heap_intro progProdCon Val.unit
+  wp_pures
+  wp_alloc_intro sLoc' HPS                      -- HPS : sLoc' ↦ 0
+  wp_pures
+  inv_alloc_left (slotInv GF F sLoc') HPS
+  wp_fork_emp "producerProc" [Expr.var "slot"] producerProc [Val.loc _]
+    [Stmt.fork "consumerProc" [Expr.var "slot"]]
   isplitr
   · -- Producer thread.
     iintro !>
@@ -300,13 +151,8 @@ theorem progProdCon_closed
     iexact HI
   · -- Parent continuation: second `fork` (consumer), then fall-through.
     iintro !>
-    wp_step                                     -- wp_skip_cons
-    iintro !>
-    iapply wp_fork (GF := GF) (F := F) (fork_post := iprop(emp : IProp GF))
-      _ "consumerProc" [Expr.var "slot"] consumerProc
-      [Val.loc _]
-      [] _ [] _
-      rfl (by agar_eval) rfl
+    wp_pures
+    wp_fork_emp "consumerProc" [Expr.var "slot"] consumerProc [Val.loc _] []
     isplitr
     · -- Consumer thread.
       iintro !>
@@ -315,5 +161,88 @@ theorem progProdCon_closed
     · -- Final parent continuation: terminal skip at Val.unit.
       iintro !>
       wp_done
+
+/-! ## `progProdConRace` — predicate-form adequacy: `result ∈ {0, 42}`
+
+Same producer/consumer pair, but main loads the slot once and returns
+the observed value. The slot's two-state invariant feeds directly into
+the postcondition without any extra ghost machinery — the predicate
+form lets the spec match the invariant's natural shape. -/
+
+def progProdConRace : Program where
+  procs := fun n =>
+    if n = "producerProc" then some producerProc
+    else if n = "consumerProc" then some consumerProc
+    else none
+  main  := ags(
+    slot := alloc 0 ;
+    fork producerProc(slot) ;
+    fork consumerProc(slot) ;
+    v := load slot ;
+    return v
+  )
+
+theorem progProdConRace_closedP
+    {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
+    [InvGpreS GF] [Agar.Logic.AgarGpreS GF F]
+    (n : Nat) (μ' : Machine)
+    (htr : Machine.StepStarN progProdConRace n
+            (Machine.initial progProdConRace) μ') :
+    Machine.AdequateP progProdConRace μ'
+      (fun v => v = Val.int 0 ∨ v = Val.int 42) := by
+  adequacy_with_heap_intro_P progProdConRace
+    (fun v => v = Val.int 0 ∨ v = Val.int 42)
+  wp_pures
+  wp_alloc_intro sLoc' HPS
+  wp_pures
+  inv_alloc_left (slotInv GF F sLoc') HPS
+  wp_fork_emp "producerProc" [Expr.var "slot"] producerProc [Val.loc _]
+    [ags(fork consumerProc(slot) ; v := load slot ; return v)]
+  isplitr
+  · iintro !>
+    iapply producerProc_wp_body
+    iexact HI
+  · iintro !>
+    wp_pures
+    wp_fork_emp "consumerProc" [Expr.var "slot"] consumerProc [Val.loc _]
+      [ags(v := load slot ; return v)]
+    isplitr
+    · iintro !>
+      iapply consumerProc_wp_body
+      iexact HI
+    · iintro !>
+      wp_pures
+      iapply wp_load_atomic (GF := GF) (F := F) (N := nroot)
+        (P := slotInv GF F sLoc')
+        (Hsub := by rw [nclose_root])
+        (heL := by agar_eval)
+      iframe HI
+      iintro HP
+      ihave HP := BI.later_or.mp $$ HP
+      icases HP with (>HC | >HC)
+      · imodintro
+        iexists (Val.int 0)
+        isplitl [HC]
+        · iexact HC
+        iintro HC
+        imodintro
+        isplitl [HC]
+        · inext; ileft; iexact HC
+        wp_lstep
+        iapply (wp_ret_top _ _ (Expr.var "v") (Val.int 0) [] _ _
+          (heval := by agar_eval))
+        ipure_intro; left; rfl
+      · imodintro
+        iexists (Val.int 42)
+        isplitl [HC]
+        · iexact HC
+        iintro HC
+        imodintro
+        isplitl [HC]
+        · inext; iright; iexact HC
+        wp_lstep
+        iapply (wp_ret_top _ _ (Expr.var "v") (Val.int 42) [] _ _
+          (heval := by agar_eval))
+        ipure_intro; right; rfl
 
 end Agar.Logic
