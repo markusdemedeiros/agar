@@ -1109,5 +1109,149 @@ theorem completeness
 
 end Theorem15Full
 
+/-! ## Generalized completeness: arbitrary heap-free initial thread
+
+`completeness_general` is the Route A bridge: it takes an arbitrary
+heap-free initial thread `t_init` (rather than `Thread.initial prog.main`)
+and an operational `SafeTp` witness for the single-thread machine
+`⟨σ, [t_init]⟩` from any `σ`, and produces an Iris `wp` for `t_init`
+over freshly-allocated ghost state. The wp's post is `⌜φ v⌝` for the
+caller-supplied `φ`; downstream `wp_wand` can weaken it to any
+`Val → IProp GF`. -/
+
+section Theorem15General
+open Iris Iris.BI Iris.OFE Iris.COFE Iris.Std.LawfulSet
+
+variable {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
+  [TpGpreS GF F] [AgarGpreS GF F] [InvGpreS GF]
+
+/-- **Generalized Theorem 15.** Identical bookkeeping to `completeness`
+but uses a caller-supplied initial thread `t_init` (with a heap-freeness
+witness) instead of `Thread.initial prog.main`. The operational witness
+is `∀ σ, SafeTp prog ⟨σ, [t_init]⟩ φ` (any starting heap), giving us a
+`SafeTp` at the closed `Mem.empty` to seed the completeness invariant.
+The percomplete lookup at index `0` returns a wp over `t_init`. -/
+theorem completeness_general
+    (GF : BundledGFunctors.{0,0,0}) (F : Type _) [UFraction F]
+    [TpGpreS GF F] [AgarGpreS GF F] [InvGpreS GF]
+    {prog : Program} {φ : Val → Prop} (hpf : prog.heapFree)
+    (t_init : Thread) (htf_init : t_init.heapFree)
+    (hs : ∀ σ, Machine.SafeTp prog ⟨σ, [t_init]⟩ φ) :
+    ∀ [_LC : InvGS_gen false GF],
+      ⊢ |={⊤}=> ∃ (_Hsi : StateInterp GF) (fork_post : IProp GF),
+        state_interp (GF := GF) Mem.empty ∗
+        wp prog.procs fork_post ⊤ t_init
+          (fun v => iprop(⌜φ v⌝ : IProp GF)) := by
+  intro _LC
+  imod (heap_init (GF := GF) (F := F)) with ⟨%G, Hheap⟩
+  letI : AgarG GF F := G
+  -- Allocate threadpool with the user-supplied initial thread.
+  imod (threadpool_init (GF := GF) (F := F) t_init) with ⟨%γ, Hpool⟩
+  icases Hpool with ⟨Hauth, Hn⟩
+  -- Operational SafeTp witness at the empty heap.
+  have hsafe_init : Machine.SafeTp prog ⟨Mem.empty, [t_init]⟩ φ :=
+    hs Mem.empty
+  -- Pre-build the invariant body.
+  have build_body : iprop(threadpool_auth (GF := GF) (F := F) γ [t_init]) ⊢
+      iprop(Icompl_pure (GF := GF) (F := F) prog φ γ) := by
+    unfold Icompl_pure
+    istart
+    iintro Hauth
+    iexists [t_init]
+    isplitr
+    · ipure_intro; exact hsafe_init
+    · iexact Hauth
+  ihave HIbody := build_body $$ Hauth
+  ihave HIbody_later := (BI.later_intro (P := iprop(Icompl_pure (GF := GF) (F := F)
+                                                    prog φ γ))) $$ HIbody
+  imod (inv_alloc nroot (⊤ : CoPset) _) $$ HIbody_later with HI
+  ihave #HI := HI
+  -- Apply percomplete at (0, t_init).
+  ihave Hwp := percomplete hpf γ nroot 0 t_init htf_init $$ [HI Hn]
+  · isplitl [HI] <;> iassumption
+  -- Weaken via the standard weaken_post wand.
+  ihave Hwand := weaken_post_proof γ nroot (φ := φ) (prog := prog) $$ HI
+  ihave Hfinal := wp_wand_fupd (GF := GF) prog.procs (iprop(True : IProp GF))
+    (Φ := percomplete_post γ 0)
+    (Ψ := fun v => iprop(⌜φ v⌝ : IProp GF))
+    t_init $$ [Hwp Hwand]
+  · isplitl [Hwp]
+    · iexact Hwp
+    · iexact Hwand
+  iapply fupd_intro
+  letI SI : StateInterp GF := inferInstance
+  iexists SI
+  iexists (iprop(True : IProp GF))
+  isplitl [Hheap]
+  · iexact Hheap
+  · iexact Hfinal
+
+end Theorem15General
+
+/-! ## Open-context completeness: no fresh AgarG / state_interp allocation
+
+`completeness_open` is the call-site-friendly variant. Unlike
+`completeness` / `completeness_general`, it does NOT call `heap_init`
+to manufacture a fresh `AgarG` + `state_interp`; instead it consumes a
+caller-supplied `[AgarG GF F]` instance and produces only a `wp` on
+`t_init`. The threadpool-ghost γ and `Icompl_pure` invariant are still
+allocated fresh (they are private to each invocation and don't conflict
+with anything already in scope).
+
+This is the missing link for call-site composition: at a `wp_call`
+residual, the surrounding proof has already gone through
+`adequacy_with_heap_intro`, so `AgarG` and `state_interp` exist; we
+just need a `wp` to discharge against. -/
+
+section Theorem15Open
+open Iris Iris.BI Iris.OFE Iris.COFE Iris.Std.LawfulSet
+
+variable {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
+  [TpGpreS GF F] [AgarG GF F] [InvGS_gen false GF]
+
+/-- **Open-context Theorem 15.** Same operational premise as
+`completeness_general` (heap-free initial thread + ∀-σ SafeTp), but
+takes `[AgarG GF F]` and `[InvGS_gen false GF]` as already-in-scope
+typeclasses. Produces just a `wp` (no fresh `state_interp`), wrapped
+in an `fupd` to absorb the ghost allocations. -/
+theorem completeness_open
+    {prog : Program} {φ : Val → Prop} (hpf : prog.heapFree)
+    (t_init : Thread) (htf_init : t_init.heapFree)
+    (hs : ∀ σ, Machine.SafeTp prog ⟨σ, [t_init]⟩ φ) :
+    ⊢ |={⊤}=> wp prog.procs (iprop(True : IProp GF)) ⊤ t_init
+        (fun v => iprop(⌜φ v⌝ : IProp GF)) := by
+  imod (threadpool_init (GF := GF) (F := F) t_init) with ⟨%γ, Hpool⟩
+  icases Hpool with ⟨Hauth, Hn⟩
+  have hsafe_init : Machine.SafeTp prog ⟨Mem.empty, [t_init]⟩ φ :=
+    hs Mem.empty
+  have build_body : iprop(threadpool_auth (GF := GF) (F := F) γ [t_init]) ⊢
+      iprop(Icompl_pure (GF := GF) (F := F) prog φ γ) := by
+    unfold Icompl_pure
+    istart
+    iintro Hauth
+    iexists [t_init]
+    isplitr
+    · ipure_intro; exact hsafe_init
+    · iexact Hauth
+  ihave HIbody := build_body $$ Hauth
+  ihave HIbody_later := (BI.later_intro (P := iprop(Icompl_pure (GF := GF) (F := F)
+                                                    prog φ γ))) $$ HIbody
+  imod (inv_alloc nroot (⊤ : CoPset) _) $$ HIbody_later with HI
+  ihave #HI := HI
+  ihave Hwp := percomplete hpf γ nroot 0 t_init htf_init $$ [HI Hn]
+  · isplitl [HI] <;> iassumption
+  ihave Hwand := weaken_post_proof γ nroot (φ := φ) (prog := prog) $$ HI
+  ihave Hfinal := wp_wand_fupd (GF := GF) prog.procs (iprop(True : IProp GF))
+    (Φ := percomplete_post γ 0)
+    (Ψ := fun v => iprop(⌜φ v⌝ : IProp GF))
+    t_init $$ [Hwp Hwand]
+  · isplitl [Hwp]
+    · iexact Hwp
+    · iexact Hwand
+  iapply fupd_intro
+  iexact Hfinal
+
+end Theorem15Open
+
 end Logic
 end Agar
