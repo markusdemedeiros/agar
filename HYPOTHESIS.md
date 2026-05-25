@@ -1,5 +1,20 @@
 # Two routes for the callee-frame wp gap
 
+> **2026-05-25 update.** Both routes were attempted (see §8 at the end of
+> this document). Route B landed — a no-state bridge lemma
+> (`Agar/Iris/CalleeBridge.lean`) closes the walkthrough example. Route
+> A produced reusable infrastructure (`completeness_general`) but did
+> *not* close the example, surfacing a deeper "closed-world" structural
+> issue. The current bridge is a useful sanity check on the
+> structural-denotational shape but **does not generalize to state-
+> bearing helpers** — which is what we actually need. See §8 for the
+> diagnosis and the revised path forward (open-context Theorem 15 +
+> Std.Do/mvcgen bridge to operational safety). The original §1–§7
+> below is preserved as a historical record of the framing.
+
+---
+
+
 ## 0. Context & current state
 
 `Machine.safe_compose` is the headline composition theorem in
@@ -395,3 +410,136 @@ If forced to bet: **Route B** is slightly more likely to land cleanly because it
 **Route B's first step:** fix `BodyTraj.pstep_near_end_pop`'s statement and proof with the case-split RHS, restore `BodyTraj.pure_steps_to_near_end`. Then state `wp_callee_of_pure_helper` with `sorry`. Apply at the example to confirm the shape lines up. Then go back and prove the bridge.
 
 Both routes should produce, as a deliverable, a closed `rangeProd_composite_walkthrough` (or the equivalent — the theorem can be renamed) with the two `sorry`s replaced by the bridge application.
+
+---
+
+## 8. Outcomes and revised path forward (2026-05-25)
+
+### 8.1 What was attempted
+
+Two agents ran in parallel git worktrees, one per route.
+
+**Route A** (`completeness_general`):
+- Added `completeness_general` to `Agar/Iris/Completeness.lean` (+79 LoC, fully closed). It's a `t_init`-parametric variant of Theorem 15: takes any `Thread`, a heap-freeness witness, and a per-σ `Machine.SafeTp prog ⟨σ, [t_init]⟩ φ` premise; produces an Iris `wp prog.procs fork_post ⊤ t_init (fun v => ⌜φ v⌝)`. Proof mirrors `completeness_modulo_lemma14` with `threadpool_init t_init` and `percomplete` applied at index 0.
+- **Did not close the walkthrough.** The blocker (described below) was structural, not a matter of effort.
+
+**Route B** (`wp_callee_of_pure_helper`):
+- Added `Agar/Iris/CalleeBridge.lean` (185 LoC, fully closed). The bridge composes `BodyTraj.pure_steps_to_near_end` + `BodyTraj.pstep_near_end_pop` + a wp-level lift of single pstep success (`wp_of_pstep`, `wp_of_pure_steps`). No invocation of Theorem 15 at any layer.
+- Fixed the pre-existing bugs in `Agar/Operational/Composition.lean`: `pstep_near_end_pop`'s doReturn-shape mismatch (now a case-split RHS via `postDoReturnThread`); `PureSteps_to_StepStarN` (the fabricated `List.set_of_getElem?` is gone).
+- **Closed the walkthrough.** `Agar/Examples/SimpleRangeProdComposition.lean`'s `rangeProd_composite_walkthrough` discharges both `.call rangeProd` sites via `wp_call → wp_callee_of_pure_helper → wp_ret_top`. Clean rebuild verified.
+
+### 8.2 The Route A blocker: closed-world allocation
+
+Theorem 15 (and our generalized `completeness_general`) ends with
+
+```
+⊢ |={⊤}=> ∃ (_Hsi : StateInterp GF) (fork_post : IProp GF),
+    state_interp (GF := GF) Mem.empty ∗
+    wp prog.procs fork_post ⊤ t_init Φ
+```
+
+The `∃ Hsi` is allocated **inside** the theorem's proof body, via `heap_init` (allocating a fresh heap-CMRA ghost) and `threadpool_init` (allocating a fresh threadpool ghost). This is appropriate for **closed-world adequacy**: the theorem is taking a "no Iris world yet" caller and bringing one into existence.
+
+At the `.call rangeProd` site in the walkthrough, we are **already inside** an Iris wp proof. `adequacy_with_heap_intro_P` has *already* allocated a specific `StateInterp` / `AgarG` instance, and the wp goal uses that pre-existing instance. The freshly-allocated `Hsi` produced by `completeness_general` is a **different** ghost-state instance — it cannot unify with the in-scope one. Iris does not have an operation "merge two state_interps."
+
+Closing the walkthrough via Route A therefore requires not just `completeness_general` but an **open-context** variant that:
+1. Takes the **current** `AgarG` / `StateInterp` as a parameter, allocating none.
+2. Allocates only the threadpool ghost + completeness invariant against the *existing* state_interp.
+3. Returns just `wp prog.procs fork_post ⊤ t_init Φ`, framing through (or assuming) the existing heap fragment.
+
+The Route A agent identified this and stopped. It is tractable (a refactor of the completeness bookkeeping in §A.4–A.5 of this doc, ~100–200 LoC additional) but was not undertaken in the run.
+
+### 8.3 What Route B's success actually means — and doesn't
+
+Route B closed the walkthrough cleanly and quickly. **But this is a degenerate case.** The bridge works because:
+
+1. **`rangeProd.body` is heap-free, fork-free, call-free.** This is what makes the operational `BodyTraj` machinery applicable: pstep on the body is stack-equivariant, procs-irrelevant, and same-mem.
+2. **`denote` is a total pure function on `Env`.** Lean's kernel can `rfl`-reduce `denote (prodProg 3) (bindParams ["a"] [Val.int k])` to a specific `(some (), ρ_f)` term by ~30 definitional unfoldings. The "denote equation" premise of the bridge is therefore not a proof obligation at all — it's a computation.
+3. **The example's spec is parametric in nothing operational.** No heap fragment owned by the caller, no resource ownership traded, no shared invariant. The bridge has nothing to thread.
+
+The walkthrough has **zero invocations** of Theorem 15, mvcgen, or any Hoare-style reasoning. It's "the helper's value is computed by `rfl`, plug it in." That is the *whole machinery*. Useful as a sanity check on the structural shape; **not the right machinery for any realistic helper**.
+
+### 8.4 Where this leaves us — the real story we want
+
+The motivating use case (per the design conversation) is:
+
+> Connect Iris-Lean and Std.Do, using mvcgen to solve denote-like results.
+
+For that:
+- Helpers should be allowed to **touch state** (read/write the heap, locally allocate, etc.) under appropriate framing.
+- The helper-body specification should be a **Hoare triple over Std.Do**'s state monad: `{P heap env vs} body {Q heap env v}`, verified by mvcgen.
+- The bridge should consume that Hoare triple, thread the caller's heap-fragment ownership through Iris's `state_interp`, and produce the callee-frame wp.
+
+Our current bridge — and the underlying `denote`/`BodyTraj` story — **cannot deliver this**. The reasons are structural:
+
+| Limitation | Why it blocks |
+|---|---|
+| `body.heapFree` is a **structural assumption** of `BodyTraj.pure_steps_to_near_end` and its dependencies. | A heap-touching body has mem-changing intermediate steps; `pstep`'s "same-mem" trajectory no longer holds in a composite where other threads might have written. The body's trajectory is no longer self-contained. |
+| `denote` is a pure function on `Env`. | A heap-touching body's "result" is state-indexed: `v_h` depends on the input heap, the output heap depends on the input heap. A pure `denote : Env → Option _ × Env` cannot express this. We'd need at minimum `denote : Env × Heap → Option _ × (Env × Heap)`, and we'd need separation-logic framing at the bridge boundary. |
+| The Iris bridge sidesteps `state_interp` entirely. | At the call site, the caller owns some `state_interp σ` heap-fragment. A state-bearing bridge has to consume part of σ, hand it to the helper, get back the helper's output heap-effect, and return the updated `state_interp` to the caller. That's the standard Iris separation-logic dance — and it requires Iris machinery, which is *exactly* what Theorem 15 in its full state-aware form provides. |
+
+**Theorem 15 generalizes to state.** Its statement is about arbitrary `prog` with arbitrary mem behavior; the `Machine.SafeTp` premise is state-aware; the resulting wp's underlying `state_interp` tracks the program's heap effects. The only thing wrong with Theorem 15 for our composition use case is the **closed-world allocator shape** (§8.2). Fix that and Theorem 15 becomes the universal bridge.
+
+### 8.5 Revised path forward
+
+The chain we want to build:
+
+```
+Std.Do specification of helper body
+              │
+              │  mvcgen / Std.Do verification
+              ▼
+Hoare triple about helper body's state-monad semantics
+              │
+              │  (small) adequacy bridge: Std.Do step ↔ Agar.Machine.Step
+              │  on a single thread, modulo heap-fragment ownership
+              ▼
+Machine.SafeTp composite ⟨σ, [t_callee]⟩ Φ
+              │
+              │  open-context Theorem 15 variant
+              ▼
+wp composite.procs fork_post ⊤ t_callee Φ_outer
+              │
+              │  used inline at the .call site (no allocation)
+              ▼
+Walkthrough's call-site goal: discharged.
+```
+
+Each link's status:
+
+1. **Std.Do specification + mvcgen verification of the helper body** — *exists outside this codebase*. The user mentions wanting to use mvcgen for "denote-like results." This is the entry point; no work on our side until the bridge below exists.
+
+2. **Std.Do ↔ Agar.Machine adequacy on a single thread** — *new infrastructure, not yet written*. This is a purely operational lemma: given a Std.Do state-monadic computation `m : StateM Heap α` and a Hoare triple `{P} m {Q}` (in whatever shape mvcgen produces), and given a translation `embed_StdDo : (StateM Heap α) → Stmt` (or an existing such translation if any), then `Machine.SafeTp programOfStdDo ⟨σ, [t]⟩ φ` holds where σ satisfies P and φ characterizes the result via Q. Likely ~150–300 LoC depending on how Std.Do's semantics line up with Agar's `tstep`.
+
+3. **Open-context Theorem 15** — *partially done* (`completeness_general` exists; needs the closed-world fix per §8.2). The fix is to thread an existing `[AgarG GF F]` instance through the theorem's signature, refactor the `heap_init`/`threadpool_init`/invariant-alloc dance to NOT re-allocate the heap (it's already in scope), and emit just the bare `wp` (no `∃ Hsi`, no fresh `state_interp Mem.empty` since the caller's `state_interp σ` is already in scope). ~150–250 LoC.
+
+4. **Open-context Theorem 15 used inline at the .call site** — *trivial once (3) lands*. Replace the current `wp_call → wp_callee_of_pure_helper → wp_ret_top` chain with `wp_call → (open Theorem 15)` applied to a SafeTp witness obtained via link (2).
+
+The pure-helper case becomes a degenerate instance: the helper has no state effects, so its Hoare triple is vacuous-on-state, and the heap-fragment ownership is `emp` — at which point link (1)+(2)+(3) collapse to "the `denote` equation," recovering the current bridge as a corollary.
+
+### 8.6 What to keep, what to retire
+
+**Keep:**
+- `Agar/Iris/CalleeBridge.lean` — useful as the pure-case bridge. Retains pedagogical value: demonstrates that the structural-denotational shape composes at the Iris level for the simplest case.
+- `Agar/Examples/SimpleRangeProdComposition.lean` — the walkthrough exists as a worked example. The `rangeProd_composite_walkthrough` theorem stands.
+- `Agar/Iris/Completeness.lean`'s `completeness_general` (Route A's artifact) — closed-world variant, useful when one *is* starting closed-world. Not load-bearing for the inline-at-call-site story.
+- The `BodyTraj` namespace in `Agar/Operational/Composition.lean` (`denote_sound_stk`, `pstep_tstep_procs`, `pure_steps_to_near_end`, `pstep_near_end_pop`, `PureSteps_to_StepStarN`). Pure-fragment operational infrastructure; reusable for the degenerate-case branch of the general story.
+
+**Retire (or de-emphasize):**
+- The framing of `wp_callee_of_pure_helper` as "the answer." It's the no-state corner of the answer.
+- The operational `Machine.safe_compose` work in `Agar/Operational/Composition.lean` (the `simulation_step` route). It has its own pre-existing `sorry`s (atomic_call/doReturn shape mismatch); given that the Iris path is the real story and the no-state case is already covered by CalleeBridge, finishing the operational route adds little. Acceptable to mark as legacy and not invest more in.
+
+**To build:**
+- The Std.Do ↔ Agar adequacy bridge (link 2 above). A new file, probably `Agar/StdDoBridge/...` or similar.
+- The open-context Theorem 15 (link 3 above). An additional theorem in `Agar/Iris/Completeness.lean`, or a new file `Agar/Iris/CompletenessOpen.lean`.
+- A worked state-bearing example, paralleling `SimpleRangeProdComposition.lean` but with a helper that touches the heap (e.g., an accumulator-into-a-loc helper). This is the proper test of the new story.
+
+### 8.7 Open questions worth resolving before more code
+
+1. **What is the precise shape of mvcgen's output?** Is it a Hoare triple (`triple m P Q` for some `triple` predicate), or a wp (`mvc.wp m Q P`)? The shape of link (2)'s premise depends on this.
+2. **Does Std.Do have an existing operational semantics expressed as a step relation?** If yes, link (2) translates step ↔ step. If no, we have to define the embedding ourselves.
+3. **How does Std.Do represent the heap?** A `Heap`-keyed `StateM`? An `IO`-style monad with `IORef`s? An abstract `MonadState`? The translation to Agar's `Mem` depends on this.
+4. **Do we want the helper to be expressible in Agar's native `Stmt` (translated from Std.Do), or expressible directly in Std.Do with Std.Do's own semantics treated as the ground truth?** The former gives us a single operational model; the latter requires Iris-Lean to be parametric in the helper's semantics.
+5. **What's the right shape of the helper-spec interface at the bridge?** For the pure case it was `(denote ρ = (some (), ρ_f), Expr.eval ρ_f e = some v)`. For the state-bearing case it's some triple/wp. We need a clean abstraction so the bridge doesn't have to know about Std.Do internals — analogous to how the current bridge consumes "any denote equation."
+
+Resolving these informs whether the Std.Do bridge is a small lift or a larger interpretive project.

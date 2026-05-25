@@ -190,19 +190,31 @@ theorem rangeProd_composite_walkthrough
       rfl
     iintro !>
     -- Bridge: convert callee-frame wp to a wp at the post-doReturn state.
-    -- Forked thread's Φ is `fun _ => fork_post = fun _ => emp`.
-    refine .trans ?_ (Agar.CalleeBridge.wp_callee_of_pure_helper (GF := GF) (F := F)
-      rangeProdComposite3 (rangeProd 3)
-      (prodProg 3) (.var "acc") rfl [Val.int 5] "r" [.ret (.var "r")]
-      Env.empty ([] : List Frame) iprop(emp : IProp GF)
-      (fun _ => iprop(emp : IProp GF))
-      _ (.int 210) rfl rfl)
-    -- Remaining: ⊢ wp _ _ _ (postDoReturnThread ⟨"r",[.ret r],_⟩ [] 210) (fun _ => emp).
-    -- Unfold postDoReturnThread; the inner thread is ⟨.ret "r", [], env.set "r" 210, [], none⟩.
-    show _ ⊢ wp _ _ _ ⟨.ret (.var "r"), [], Env.empty.set "r" (.int 210), [], none⟩ _
-    iintro Hemp
-    iapply wp_ret_top _ _ _ (.int 210) _ _ _ rfl
-    iexact Hemp
+    -- The bridge's two arithmetic side conditions (the helper's denote
+    -- equation and the retExpr eval) are left as explicit named goals.
+    refine .trans ?bridge_premise_fork
+      (Agar.CalleeBridge.wp_callee_of_pure_helper (GF := GF) (F := F)
+        rangeProdComposite3 (rangeProd 3)
+        (prodProg 3) (.var "acc") rfl [Val.int 5] "r" [.ret (.var "r")]
+        Env.empty ([] : List Frame) iprop(emp : IProp GF)
+        (fun _ => iprop(emp : IProp GF))
+        ?ρ_f_fork (.int 210) ?denote_eq_fork ?ret_eq_fork)
+    -- The body's denotation at vs = [5] terminates at some ρ_f where
+    -- `acc` holds the product 5·6·7 = 210.
+    case denote_eq_fork =>
+      -- Goal: denote (prodProg 3) (bindParams ["a"] [Val.int 5]) = (some (), ?ρ_f)
+      rfl
+    case ret_eq_fork =>
+      -- Goal: Expr.eval ?ρ_f (.var "acc") = some (.int 210)
+      rfl
+    case bridge_premise_fork =>
+      -- Remaining: wp at the post-doReturn state.
+      -- postDoReturnThread ⟨"r", [.ret (.var "r")], _⟩ [] (.int 210)
+      --   reduces to ⟨.ret (.var "r"), [], env.set "r" 210, [], none⟩.
+      show _ ⊢ wp _ _ _ ⟨.ret (.var "r"), [], Env.empty.set "r" (.int 210), [], none⟩ _
+      iintro Hemp
+      iapply wp_ret_top _ _ _ (.int 210) _ _ _ rfl
+      iexact Hemp
   · -- Parent: WP at `.seq (.call "x" "rangeProd" [1]) (.ret "x")`.
     iintro !>
     wp_pures
@@ -214,18 +226,27 @@ theorem rangeProd_composite_walkthrough
       (by agar_eval)
       rfl
     iintro !>
-    -- Bridge: convert callee-frame wp to a wp at the post-doReturn state.
-    -- Main thread's Φ is `fun v => ⌜True⌝` (from the spec).
-    refine .trans ?_ (Agar.CalleeBridge.wp_callee_of_pure_helper (GF := GF) (F := F)
-      rangeProdComposite3 (rangeProd 3)
-      (prodProg 3) (.var "acc") rfl [Val.int 1] "x" [.ret (.var "x")]
-      Env.empty ([] : List Frame) _
-      (fun v => iprop(⌜(fun _ : Val => True) v⌝ : IProp GF))
-      _ (.int 6) rfl rfl)
-    show _ ⊢ wp _ _ _ ⟨.ret (.var "x"), [], Env.empty.set "x" (.int 6), [], none⟩ _
-    iintro _
-    iapply wp_ret_top _ _ _ (.int 6) _ _ _ rfl
-    ipure_intro; trivial
+    -- Bridge for the main thread; denote/ret exposed as named goals.
+    refine .trans ?bridge_premise_main
+      (Agar.CalleeBridge.wp_callee_of_pure_helper (GF := GF) (F := F)
+        rangeProdComposite3 (rangeProd 3)
+        (prodProg 3) (.var "acc") rfl [Val.int 1] "x" [.ret (.var "x")]
+        Env.empty ([] : List Frame) _
+        (fun v => iprop(⌜(fun _ : Val => True) v⌝ : IProp GF))
+        ?ρ_f_main (.int 6) ?denote_eq_main ?ret_eq_main)
+    -- The body's denotation at vs = [1] terminates at some ρ_f where
+    -- `acc` holds the product 1·2·3 = 6.
+    case denote_eq_main =>
+      -- Goal: denote (prodProg 3) (bindParams ["a"] [Val.int 1]) = (some (), ?ρ_f)
+      rfl
+    case ret_eq_main =>
+      -- Goal: Expr.eval ?ρ_f (.var "acc") = some (.int 6)
+      rfl
+    case bridge_premise_main =>
+      show _ ⊢ wp _ _ _ ⟨.ret (.var "x"), [], Env.empty.set "x" (.int 6), [], none⟩ _
+      iintro _
+      iapply wp_ret_top _ _ _ (.int 6) _ _ _ rfl
+      ipure_intro; trivial
 
 end SimpleRangeProd
 end Agar
