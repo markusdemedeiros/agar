@@ -5,6 +5,7 @@ public import Agar.Lang.Semantics
 public import Agar.Iris.Wp
 public import Agar.Iris.Adequacy
 public import Agar.Iris.Completeness
+public import Agar.Lang.Denotational
 
 @[expose] public section
 
@@ -714,6 +715,397 @@ theorem helper_value_exists
     ∃ v, helper_post vs v := by
   obtain ⟨_n, _μ', _t, v, _, _, _, hpost⟩ := h_safe.reaches
   exact ⟨v, hpost⟩
+
+/-! ## Body trajectory via the denotational pillar
+
+Structural-denotational backbone for the helper body. Under the premise
+`h.body = .seq (embed pureBody) (.ret retExpr)`, we expose:
+
+* A `PureSteps` chain from the body-start thread `⟨h.body, [],
+  bindParams h.params vs, frame :: rest, none⟩` to the unique
+  *near-end* state `⟨.ret retExpr, [], ρ', frame :: rest, none⟩`,
+  where `ρ'` is the body's denotational final environment.
+* One more pstep step lands at the *post-frame* state
+  `⟨.skip, frame.cont, frame.env.set frame.rv v_h, rest, none⟩` where
+  `v_h = Expr.eval ρ' retExpr`.
+
+Both steps lift to `Machine.Step composite` because the body is
+`.call`-free and `.fork`-free, so `composite.procs` plays no role.
+-/
+
+namespace BodyTraj
+
+/-- Thread-with-stack constructor (paralleling `mkT` from `Denotational`
+but allowing an explicit stack). -/
+@[reducible]
+def mkTS (s : Stmt) (cs : List Stmt) (ρ : Env) (stk : List Frame) : Thread :=
+  { stmt := s, cont := cs, env := ρ, stack := stk, result := none }
+
+@[simp] theorem mkTS_skip_step (cs : List Stmt) (ρ : Env) (s' : Stmt)
+    (stk : List Frame) :
+    pstep (mkTS .skip (s' :: cs) ρ stk) = some (mkTS s' cs ρ stk) := rfl
+
+@[simp] theorem mkTS_seq_step (a b : Stmt) (cs : List Stmt) (ρ : Env)
+    (stk : List Frame) :
+    pstep (mkTS (.seq a b) cs ρ stk) = some (mkTS a (b :: cs) ρ stk) := rfl
+
+@[simp] theorem mkTS_assign_step (x : Name) (e : Expr) (cs : List Stmt)
+    (ρ : Env) (stk : List Frame) :
+    pstep (mkTS (.assign x e) cs ρ stk) =
+      (Expr.eval ρ e).map (fun v => mkTS .skip cs (ρ.set x v) stk) := by
+  simp [pstep, tstep, mkTS]
+  cases Expr.eval ρ e <;> rfl
+
+@[simp] theorem mkTS_ite_step (e : Expr) (s₁ s₂ : Stmt) (cs : List Stmt)
+    (ρ : Env) (stk : List Frame) :
+    pstep (mkTS (.ite e s₁ s₂) cs ρ stk) =
+      match Expr.eval ρ e with
+      | some (.bool true)  => some (mkTS s₁ cs ρ stk)
+      | some (.bool false) => some (mkTS s₂ cs ρ stk)
+      | _                  => none := by
+  simp [pstep, tstep, mkTS]
+  rcases h : Expr.eval ρ e with _ | v
+  · rfl
+  · cases v <;> try rfl
+    rename_i b; cases b <;> rfl
+
+/-- Stack-parametric version of `denote_sound`. The proof structurally
+mirrors `denote_sound` (in `Agar.Lang.Denotational`) but uses `mkTS` so
+the stack is preserved through the chain. PureStmt has no `.ret`, so
+`embed s` never reads the stack via a `doReturn`; consequently every
+intermediate pstep is stack-equivariant. -/
+theorem denote_sound_stk (s : PureStmt) :
+    ∀ (cs : List Stmt) (stk : List Frame) (ρ ρ' : Env),
+      denote s ρ = (some (), ρ') →
+      PureSteps (mkTS (embed s) cs ρ stk) (mkTS .skip cs ρ' stk) := by
+  induction s with
+  | skip =>
+      intro cs stk ρ ρ' h
+      simp [denote] at h
+      obtain ⟨_, rfl⟩ := h
+      exact .refl
+  | assign x e =>
+      intro cs stk ρ ρ' h
+      simp [denote] at h
+      split at h
+      · cases h
+      · rename_i v heq
+        cases h
+        refine .single ?_
+        show pstep (mkTS (.assign x e) cs ρ stk) = _
+        simp [heq]
+  | seq s₁ s₂ ih₁ ih₂ =>
+      intro cs stk ρ ρ' h
+      simp only [denote] at h
+      rcases h₁ : denote s₁ ρ with ⟨o₁, ρ₁⟩
+      rw [h₁] at h
+      cases o₁ with
+      | none => cases h
+      | some =>
+          simp only at h
+          have step₁ : pstep (mkTS (.seq (embed s₁) (embed s₂)) cs ρ stk)
+              = some (mkTS (embed s₁) (embed s₂ :: cs) ρ stk) := by simp
+          refine .step step₁ ?_
+          have hs₁ := ih₁ (embed s₂ :: cs) stk ρ ρ₁ h₁
+          have hpop : pstep (mkTS .skip (embed s₂ :: cs) ρ₁ stk)
+              = some (mkTS (embed s₂) cs ρ₁ stk) := by simp
+          refine hs₁.trans (.step hpop ?_)
+          exact ih₂ cs stk ρ₁ ρ' h
+  | ite e s₁ s₂ ih₁ ih₂ =>
+      intro cs stk ρ ρ' h
+      simp only [denote] at h
+      split at h
+      · rename_i hb
+        have step₁ : pstep (mkTS (.ite e (embed s₁) (embed s₂)) cs ρ stk)
+            = some (mkTS (embed s₁) cs ρ stk) := by simp [hb]
+        exact .step step₁ (ih₁ cs stk ρ ρ' h)
+      · rename_i hb
+        have step₁ : pstep (mkTS (.ite e (embed s₁) (embed s₂)) cs ρ stk)
+            = some (mkTS (embed s₂) cs ρ stk) := by simp [hb]
+        exact .step step₁ (ih₂ cs stk ρ ρ' h)
+      · cases h
+  | «repeat» n s ih =>
+      show ∀ cs stk ρ ρ', iter (denote s) n ρ = (some (), ρ') →
+        PureSteps (mkTS (unroll (embed s) n) cs ρ stk) (mkTS .skip cs ρ' stk)
+      induction n with
+      | zero =>
+          intro cs stk ρ ρ' h
+          simp [iter] at h
+          obtain ⟨_, rfl⟩ := h
+          exact .refl
+      | succ k ihk =>
+          intro cs stk ρ ρ' h
+          show PureSteps (mkTS (.seq (embed s) (unroll (embed s) k)) cs ρ stk) _
+          simp only [iter] at h
+          rcases h₁ : denote s ρ with ⟨o₁, ρ₁⟩
+          rw [h₁] at h
+          cases o₁ with
+          | none => cases h
+          | some =>
+              simp only at h
+              have step₁ : pstep (mkTS (.seq (embed s) (unroll (embed s) k)) cs ρ stk)
+                  = some (mkTS (embed s) (unroll (embed s) k :: cs) ρ stk) := by simp
+              refine .step step₁ ?_
+              have hs₁ := ih (unroll (embed s) k :: cs) stk ρ ρ₁ h₁
+              have hpop : pstep (mkTS .skip (unroll (embed s) k :: cs) ρ₁ stk)
+                  = some (mkTS (unroll (embed s) k) cs ρ₁ stk) := by simp
+              refine hs₁.trans (.step hpop ?_)
+              exact ihk cs stk ρ₁ ρ' h
+  | forN n s ih =>
+      show ∀ cs stk ρ ρ', iter (denote s) n ρ = (some (), ρ') →
+        PureSteps (mkTS (unroll (embed s) n) cs ρ stk) (mkTS .skip cs ρ' stk)
+      induction n with
+      | zero =>
+          intro cs stk ρ ρ' h
+          simp [iter] at h
+          obtain ⟨_, rfl⟩ := h
+          exact .refl
+      | succ k ihk =>
+          intro cs stk ρ ρ' h
+          show PureSteps (mkTS (.seq (embed s) (unroll (embed s) k)) cs ρ stk) _
+          simp only [iter] at h
+          rcases h₁ : denote s ρ with ⟨o₁, ρ₁⟩
+          rw [h₁] at h
+          cases o₁ with
+          | none => cases h
+          | some =>
+              simp only at h
+              have step₁ : pstep (mkTS (.seq (embed s) (unroll (embed s) k)) cs ρ stk)
+                  = some (mkTS (embed s) (unroll (embed s) k :: cs) ρ stk) := by simp
+              refine .step step₁ ?_
+              have hs₁ := ih (unroll (embed s) k :: cs) stk ρ ρ₁ h₁
+              have hpop : pstep (mkTS .skip (unroll (embed s) k :: cs) ρ₁ stk)
+                  = some (mkTS (unroll (embed s) k) cs ρ₁ stk) := by simp
+              refine hs₁.trans (.step hpop ?_)
+              exact ihk cs stk ρ₁ ρ' h
+  | while_ n g s ih =>
+      show ∀ cs stk ρ ρ', denote (.while_ n g s) ρ = (some (), ρ') →
+        PureSteps (mkTS (unrollW g (embed s) n) cs ρ stk) (mkTS .skip cs ρ' stk)
+      induction n with
+      | zero =>
+          intro cs stk ρ ρ' h
+          rw [denote_while_zero] at h
+          cases h
+      | succ k ihk =>
+          intro cs stk ρ ρ' h
+          show PureSteps (mkTS (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ stk) _
+          rw [denote_while_succ] at h
+          split at h
+          · rename_i hb
+            simp only [denote] at h
+            rcases h₁ : denote s ρ with ⟨o₁, ρ₁⟩
+            rw [h₁] at h
+            cases o₁ with
+            | none => cases h
+            | some =>
+                simp only at h
+                have step₁ : pstep (mkTS (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ stk)
+                    = some (mkTS (.seq (embed s) (unrollW g (embed s) k)) cs ρ stk) := by simp [hb]
+                refine .step step₁ ?_
+                have step₂ : pstep (mkTS (.seq (embed s) (unrollW g (embed s) k)) cs ρ stk)
+                    = some (mkTS (embed s) (unrollW g (embed s) k :: cs) ρ stk) := by simp
+                refine .step step₂ ?_
+                have hs₁ := ih (unrollW g (embed s) k :: cs) stk ρ ρ₁ h₁
+                have hpop : pstep (mkTS .skip (unrollW g (embed s) k :: cs) ρ₁ stk)
+                    = some (mkTS (unrollW g (embed s) k) cs ρ₁ stk) := by simp
+                refine hs₁.trans (.step hpop ?_)
+                exact ihk cs stk ρ₁ ρ' h
+          · rename_i hb
+            -- guard false: ite picks the .skip branch and we're done.
+            obtain ⟨_, rfl⟩ := h
+            have step₁ : pstep (mkTS (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ stk)
+                = some (mkTS .skip cs ρ stk) := by simp [hb]
+            exact .single step₁
+          · cases h
+
+/-- **The headline body chain.** Under the structural premise, from the
+body-start thread (cont = [], stack = frame :: rest), we step via
+`pstep` down to the *near-end* thread `⟨.ret retExpr, [], ρ', frame ::
+rest, none⟩` — one `.seq`-unpack, the entire `denote_sound_stk` chain,
+and one `.skip`-pop. -/
+theorem pure_steps_to_near_end
+    (pureBody : PureStmt) (retExpr : Expr)
+    (ρ ρ' : Env) (frame : Frame) (rest : List Frame)
+    (h_denote : denote pureBody ρ = (some (), ρ')) :
+    PureSteps
+      ⟨.seq (embed pureBody) (.ret retExpr), [], ρ, frame :: rest, none⟩
+      ⟨.ret retExpr, [], ρ', frame :: rest, none⟩ := by
+  -- Step 1: unfold the outer .seq.
+  have step₁ : pstep (mkTS (.seq (embed pureBody) (.ret retExpr)) [] ρ (frame :: rest))
+      = some (mkTS (embed pureBody) [.ret retExpr] ρ (frame :: rest)) := by simp
+  refine .step step₁ ?_
+  -- Step 2: the body's denote-sound chain.
+  have hbody := denote_sound_stk pureBody [.ret retExpr] (frame :: rest) ρ ρ' h_denote
+  -- Step 3: pop the queued .ret retExpr.
+  have step₃ : pstep (mkTS .skip [.ret retExpr] ρ' (frame :: rest))
+      = some (mkTS (.ret retExpr) [] ρ' (frame :: rest)) := by simp
+  exact hbody.trans (.step step₃ .refl)
+
+/-- The final `.ret`-pop: from the near-end state, a single pstep fires
+`doReturn` and lands at the post-frame state. -/
+theorem pstep_near_end_pop
+    (retExpr : Expr) (ρ' : Env) (v_h : Val) (frame : Frame) (rest : List Frame)
+    (h_ret : Expr.eval ρ' retExpr = some v_h) :
+    pstep ⟨.ret retExpr, [], ρ', frame :: rest, none⟩
+      = some ⟨.skip, frame.cont, frame.env.set frame.rv v_h, rest, none⟩ := by
+  simp [pstep, tstep, h_ret, doReturn]
+  cases hc : frame.cont with
+  | nil => simp
+  | cons s rest => simp
+
+/-- Lift `pstep` to `tstep procs` for *any* `procs` and any mem `m`. The
+side condition is that pstep succeeds — which rules out `.call` and
+`.fork` (where `noProcs` matters). -/
+theorem pstep_tstep_procs (procs : Name → Option Proc) (m : Mem)
+    (t t' : Thread) (h : pstep t = some t') :
+    tstep procs none m t = some (m, t', none) := by
+  -- Identical to `pstep_machine_indep` (in Denotational) but with arbitrary procs.
+  unfold pstep at h
+  obtain ⟨stmt, cont, env, stack, result⟩ := t
+  cases stmt with
+  | skip =>
+      simp [tstep] at h
+      cases cont with
+      | nil =>
+          cases stack with
+          | nil => cases h
+          | cons f rest =>
+              simp [tstep, doReturn] at h ⊢
+              cases hc : f.cont <;> simp [hc] at h ⊢ <;> (cases h; rfl)
+      | cons s rest => cases h; simp [tstep]
+  | seq a b => cases h; simp [tstep]
+  | assign x e =>
+      simp [tstep] at h ⊢
+      cases hev : Expr.eval env e <;> simp [hev] at h ⊢
+      cases h; rfl
+  | ite e s₁ s₂ =>
+      simp [tstep] at h ⊢
+      cases hev : Expr.eval env e with
+      | none => simp [hev] at h
+      | some v =>
+          cases v <;> simp [hev] at h ⊢
+          rename_i b; cases b <;> simp at h ⊢ <;> (cases h; rfl)
+  | alloc x e => simp [tstep] at h
+  | load x e =>
+      simp [tstep, Mem.load, Mem.empty] at h
+      cases hev : Expr.eval env e <;> simp [hev] at h
+      rename_i v; cases v <;> simp at h
+  | store eL eV =>
+      simp [tstep, Mem.store, Mem.empty] at h
+      cases hL : Expr.eval env eL <;> simp [hL] at h
+      cases hV : Expr.eval env eV <;> simp [hV] at h
+      rename_i v _; cases v <;> simp at h
+  | free e =>
+      simp [tstep, Mem.free, Mem.empty] at h
+      cases hev : Expr.eval env e <;> simp [hev] at h
+      rename_i v; cases v <;> simp at h
+  | cas x eL eO eN =>
+      simp [tstep, Mem.load, Mem.empty] at h
+      cases hL : Expr.eval env eL <;> simp [hL] at h
+      cases hO : Expr.eval env eO <;> simp [hO] at h
+      cases hN : Expr.eval env eN <;> simp [hN] at h
+      rename_i v _ _; cases v <;> simp at h
+  | whileDo e s => cases h; simp [tstep]
+  | call x f args => simp [tstep, callFrom, noProcs] at h
+  | ret e =>
+      simp [tstep] at h ⊢
+      cases hev : Expr.eval env e with
+      | none => simp [hev] at h
+      | some v =>
+          simp [hev] at h ⊢
+          unfold doReturn at h ⊢
+          cases stack with
+          | nil => cases h; rfl
+          | cons f rest =>
+              cases hc : f.cont <;> simp [hc] at h ⊢ <;> (cases h; rfl)
+  | fork f args => simp [tstep, noProcs] at h
+
+/-- Lift one `pstep` of thread at index `i` to one `Machine.Step` of the
+composite machine. -/
+theorem pstep_to_Machine_Step_at (composite : Program) (m : Mem)
+    (threads : List Thread) (i : Nat) (t t' : Thread)
+    (hi : threads[i]? = some t) (h : pstep t = some t') :
+    Machine.Step composite ⟨m, threads⟩ ⟨m, threads.set i t'⟩ := by
+  have hts : tstep composite.procs none m t = some (m, t', none) :=
+    pstep_tstep_procs composite.procs m t t' h
+  -- The Machine.Step constructor appends sp.toList = [] (since sp = none).
+  have : (none : Option Thread).toList = [] := rfl
+  have hgoal : threads.set i t' = threads.set i t' ++ (none : Option Thread).toList := by
+    simp
+  rw [hgoal]
+  exact Machine.Step.step (p := composite)
+    (i := i) (chosen := none) (t := t) (t' := t') (sp := none)
+    (m := m) (m' := m) (threads := threads) (hi := hi) (hstep := hts)
+
+/-- Lift a `PureSteps` chain on a single thread into a `Machine.StepStarN`
+on the composite machine where that thread is at index `i`. -/
+theorem PureSteps_to_StepStarN (composite : Program) (m : Mem)
+    (threads : List Thread) (i : Nat) :
+    ∀ {t t' : Thread}, threads[i]? = some t → PureSteps t t' →
+      ∃ n, Machine.StepStarN composite n ⟨m, threads⟩ ⟨m, threads.set i t'⟩ := by
+  intro t t' hi h
+  induction h generalizing threads with
+  | refl =>
+      refine ⟨0, ?_⟩
+      have : threads.set i t = threads := by
+        apply List.set_of_getElem?
+        exact hi
+      rw [this]; exact .refl _
+  | @step t₀ t₁ _ hpstep _ ih =>
+      have hstep := pstep_to_Machine_Step_at composite m threads i t₀ t₁ hi hpstep
+      -- After the step, the threads list becomes threads.set i t₁.
+      have hi' : (threads.set i t₁)[i]? = some t₁ := by
+        rcases h_lt : i < threads.length with _
+        · simp [List.getElem?_set, List.getElem?_eq_some_iff]
+          have : i < threads.length := by
+            have := List.getElem?_eq_some_iff.mp hi
+            exact this.1
+          simp [this]
+        · -- i ≥ threads.length, but then hi would be none, contradiction.
+          have hkk : i < threads.length := (List.getElem?_eq_some_iff.mp hi).1
+          exact absurd hkk (by simp [h_lt])
+      obtain ⟨n_rest, hrest⟩ := ih hi'
+      -- Compose: 1 + n_rest steps via Machine.StepStarN.step.
+      refine ⟨n_rest + 1, ?_⟩
+      have heq : (threads.set i t₁).set i t' = threads.set i t' := by
+        simp [List.set_set]
+      rw [← heq] at hrest
+      have : n_rest + 1 = Nat.succ n_rest := rfl
+      rw [this]
+      exact .step hstep hrest
+
+end BodyTraj
+
+/-- **Body trajectory.** The headline composition lemma: under the
+structural premise, the concrete body's pure trajectory inside a
+multi-thread composite machine reaches the post-frame state in finitely
+many `Machine.Step`s. -/
+theorem helper_runs_to_value
+    (composite : Program) (h : Proc)
+    (pureBody : PureStmt) (retExpr : Expr)
+    (h_body_eq : h.body = .seq (embed pureBody) (.ret retExpr))
+    (vs : List Val) (frame : Frame) (rest : List Frame) (m : Mem)
+    (threads : List Thread) (i : Nat)
+    (ρ_f : Env) (v_h : Val)
+    (h_denote : denote pureBody (bindParams h.params vs) = (some (), ρ_f))
+    (h_ret : Expr.eval ρ_f retExpr = some v_h)
+    (h_idx : threads[i]? = some
+              ⟨h.body, [], bindParams h.params vs, frame :: rest, none⟩) :
+    ∃ n, Machine.StepStarN composite n
+      ⟨m, threads⟩
+      ⟨m, threads.set i ⟨.skip, frame.cont, frame.env.set frame.rv v_h, rest, none⟩⟩ := by
+  -- Stitch the body's PureSteps + the final .ret pop.
+  have hbody := BodyTraj.pure_steps_to_near_end pureBody retExpr
+    (bindParams h.params vs) ρ_f frame rest h_denote
+  have hpop := BodyTraj.pstep_near_end_pop retExpr ρ_f v_h frame rest h_ret
+  have hfull : PureSteps
+      ⟨.seq (embed pureBody) (.ret retExpr), [], bindParams h.params vs,
+        frame :: rest, none⟩
+      ⟨.skip, frame.cont, frame.env.set frame.rv v_h, rest, none⟩ :=
+    hbody.trans (.single hpop)
+  -- Convert the start thread to use h.body via h_body_eq.
+  rw [← h_body_eq] at hfull
+  exact BodyTraj.PureSteps_to_StepStarN composite m threads i h_idx hfull
 
 /-- **Simulation init.** The initial configurations are Matching at all
 indices, every thread is heap-free (since the composite's `main` is
