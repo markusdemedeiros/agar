@@ -326,6 +326,174 @@ theorem denote_sound (s : PureStmt) :
             exact .step stepIte .refl
           · cases h
 
+/-- Generalised soundness: arbitrary trailing `stack` and `result` are carried
+through unchanged by the embed trajectory. -/
+theorem denote_sound_general (s : PureStmt) :
+    ∀ (cs : List Stmt) (ρ ρ' : Env)
+      (stack : List Frame) (result : Option Val),
+      denote s ρ = (some (), ρ') →
+      PureSteps ⟨embed s, cs, ρ, stack, result⟩
+                ⟨.skip, cs, ρ', stack, result⟩ := by
+  induction s with
+  | skip =>
+      intro cs ρ ρ' stack result h
+      simp [denote] at h
+      obtain ⟨_, rfl⟩ := h
+      exact .refl
+  | assign x e =>
+      intro cs ρ ρ' stack result h
+      simp [denote] at h
+      split at h
+      · cases h
+      · rename_i v heq
+        cases h
+        refine .single ?_
+        show pstep ⟨.assign x e, cs, ρ, stack, result⟩ = _
+        simp [pstep, tstep, heq]
+  | seq s₁ s₂ ih₁ ih₂ =>
+      intro cs ρ ρ' stack result h
+      simp only [denote] at h
+      rcases h₁ : denote s₁ ρ with ⟨o₁, ρ₁⟩
+      rw [h₁] at h
+      cases o₁ with
+      | none => cases h
+      | some =>
+          simp only at h
+          have step₁ : pstep ⟨.seq (embed s₁) (embed s₂), cs, ρ, stack, result⟩
+              = some ⟨embed s₁, embed s₂ :: cs, ρ, stack, result⟩ := rfl
+          refine .step step₁ ?_
+          have hs₁ := ih₁ (embed s₂ :: cs) ρ ρ₁ stack result h₁
+          have hpop : pstep ⟨(.skip : Stmt), embed s₂ :: cs, ρ₁, stack, result⟩
+              = some ⟨embed s₂, cs, ρ₁, stack, result⟩ := rfl
+          refine hs₁.trans (.step hpop ?_)
+          exact ih₂ cs ρ₁ ρ' stack result h
+  | ite e s₁ s₂ ih₁ ih₂ =>
+      intro cs ρ ρ' stack result h
+      simp only [denote] at h
+      split at h
+      · rename_i hb
+        have step₁ : pstep ⟨.ite e (embed s₁) (embed s₂), cs, ρ, stack, result⟩
+            = some ⟨embed s₁, cs, ρ, stack, result⟩ := by
+          show (match tstep noProcs none Mem.empty
+                  ⟨.ite e (embed s₁) (embed s₂), cs, ρ, stack, result⟩ with
+                | some (_, t', _) => some t' | none => none) = _
+          simp [tstep, hb]
+        exact .step step₁ (ih₁ cs ρ ρ' stack result h)
+      · rename_i hb
+        have step₁ : pstep ⟨.ite e (embed s₁) (embed s₂), cs, ρ, stack, result⟩
+            = some ⟨embed s₂, cs, ρ, stack, result⟩ := by
+          show (match tstep noProcs none Mem.empty
+                  ⟨.ite e (embed s₁) (embed s₂), cs, ρ, stack, result⟩ with
+                | some (_, t', _) => some t' | none => none) = _
+          simp [tstep, hb]
+        exact .step step₁ (ih₂ cs ρ ρ' stack result h)
+      · cases h
+  | «repeat» n s ih =>
+      show ∀ cs ρ ρ' stack result, iter (denote s) n ρ = (some (), ρ') →
+        PureSteps ⟨unroll (embed s) n, cs, ρ, stack, result⟩
+                  ⟨.skip, cs, ρ', stack, result⟩
+      induction n with
+      | zero =>
+          intro cs ρ ρ' stack result h
+          simp [iter] at h
+          obtain ⟨_, rfl⟩ := h
+          exact .refl
+      | succ k ihk =>
+          intro cs ρ ρ' stack result h
+          show PureSteps ⟨.seq (embed s) (unroll (embed s) k), cs, ρ, stack, result⟩ _
+          simp only [iter] at h
+          rcases h₁ : denote s ρ with ⟨o₁, ρ₁⟩
+          rw [h₁] at h
+          cases o₁ with
+          | none => cases h
+          | some =>
+              simp only at h
+              have step₁ : pstep ⟨.seq (embed s) (unroll (embed s) k), cs, ρ, stack, result⟩
+                  = some ⟨embed s, unroll (embed s) k :: cs, ρ, stack, result⟩ := rfl
+              refine .step step₁ ?_
+              have hs₁ := ih (unroll (embed s) k :: cs) ρ ρ₁ stack result h₁
+              have hpop : pstep ⟨(.skip : Stmt), unroll (embed s) k :: cs, ρ₁, stack, result⟩
+                  = some ⟨unroll (embed s) k, cs, ρ₁, stack, result⟩ := rfl
+              refine hs₁.trans (.step hpop ?_)
+              exact ihk cs ρ₁ ρ' stack result h
+  | forN n s ih =>
+      show ∀ cs ρ ρ' stack result, iter (denote s) n ρ = (some (), ρ') →
+        PureSteps ⟨unroll (embed s) n, cs, ρ, stack, result⟩
+                  ⟨.skip, cs, ρ', stack, result⟩
+      induction n with
+      | zero =>
+          intro cs ρ ρ' stack result h
+          simp [iter] at h
+          obtain ⟨_, rfl⟩ := h
+          exact .refl
+      | succ k ihk =>
+          intro cs ρ ρ' stack result h
+          show PureSteps ⟨.seq (embed s) (unroll (embed s) k), cs, ρ, stack, result⟩ _
+          simp only [iter] at h
+          rcases h₁ : denote s ρ with ⟨o₁, ρ₁⟩
+          rw [h₁] at h
+          cases o₁ with
+          | none => cases h
+          | some =>
+              simp only at h
+              have step₁ : pstep ⟨.seq (embed s) (unroll (embed s) k), cs, ρ, stack, result⟩
+                  = some ⟨embed s, unroll (embed s) k :: cs, ρ, stack, result⟩ := rfl
+              refine .step step₁ ?_
+              have hs₁ := ih (unroll (embed s) k :: cs) ρ ρ₁ stack result h₁
+              have hpop : pstep ⟨(.skip : Stmt), unroll (embed s) k :: cs, ρ₁, stack, result⟩
+                  = some ⟨unroll (embed s) k, cs, ρ₁, stack, result⟩ := rfl
+              refine hs₁.trans (.step hpop ?_)
+              exact ihk cs ρ₁ ρ' stack result h
+  | while_ n g s ih =>
+      show ∀ cs ρ ρ' stack result, denote (.while_ n g s) ρ = (some (), ρ') →
+        PureSteps ⟨unrollW g (embed s) n, cs, ρ, stack, result⟩
+                  ⟨.skip, cs, ρ', stack, result⟩
+      induction n with
+      | zero =>
+          intro cs ρ ρ' stack result h
+          rw [denote_while_zero] at h
+          cases h
+      | succ k ihk =>
+          intro cs ρ ρ' stack result h
+          show PureSteps ⟨.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip, cs, ρ, stack, result⟩ _
+          rw [denote_while_succ] at h
+          split at h
+          · rename_i hb
+            simp only [denote] at h
+            rcases h₁ : denote s ρ with ⟨o₁, ρ₁⟩
+            rw [h₁] at h
+            cases o₁ with
+            | none => cases h
+            | some =>
+                simp only at h
+                have stepIte : pstep ⟨.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip, cs, ρ, stack, result⟩
+                    = some ⟨.seq (embed s) (unrollW g (embed s) k), cs, ρ, stack, result⟩ := by
+                  show (match tstep noProcs none Mem.empty
+                          ⟨.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip, cs, ρ, stack, result⟩ with
+                        | some (_, t', _) => some t' | none => none) = _
+                  simp [tstep, hb]
+                refine .step stepIte ?_
+                have stepSeq : pstep ⟨.seq (embed s) (unrollW g (embed s) k), cs, ρ, stack, result⟩
+                    = some ⟨embed s, unrollW g (embed s) k :: cs, ρ, stack, result⟩ := rfl
+                refine .step stepSeq ?_
+                have hs₁ := ih (unrollW g (embed s) k :: cs) ρ ρ₁ stack result h₁
+                have hpop : pstep ⟨(.skip : Stmt), unrollW g (embed s) k :: cs, ρ₁, stack, result⟩
+                    = some ⟨unrollW g (embed s) k, cs, ρ₁, stack, result⟩ := rfl
+                refine hs₁.trans (.step hpop ?_)
+                exact ihk cs ρ₁ ρ' stack result h
+          · rename_i hb
+            have hρ : ρ = ρ' := by
+              have := congrArg Prod.snd h; simpa using this
+            subst hρ
+            have stepIte : pstep ⟨.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip, cs, ρ, stack, result⟩
+                = some ⟨.skip, cs, ρ, stack, result⟩ := by
+              show (match tstep noProcs none Mem.empty
+                      ⟨.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip, cs, ρ, stack, result⟩ with
+                    | some (_, t', _) => some t' | none => none) = _
+              simp [tstep, hb]
+            exact .step stepIte .refl
+          · cases h
+
 /-- From an initial thread for `embed s`, we reach the terminal thread with env
 `(denote s ρ).2`. -/
 theorem denote_initial_sound (s : PureStmt) (ρ ρ' : Env)
@@ -1220,6 +1388,170 @@ theorem Machine.sumProg_reaches_gauss (n : Nat) :
   (Machine.denote_iff (sumProg n) (gaussEnv (gauss n) (n + 1))).mp
     (denote_sumProg n)
 
+/-! ## Marquee numeric example: `forN n` computes `∏_{i=a}^{b-1} i`.
+
+This mirrors the Gauss-sum setup above, but:
+* The loop body multiplies instead of adds.
+* The starting value of the counter `i` is read from a variable `"a"`
+  (rather than a constant `1`), and the loop bound is supplied externally
+  by the caller as `(b - a).toNat`. The caller sets up `"a"` and `"b"`
+  in the environment beforehand (e.g. via `bindParams`). -/
+
+/-- Loop body: `s := s * i; i := i + 1`. -/
+def productBody : PureStmt :=
+  .seq (.assign "s" (.bin .mul (.var "s") (.var "i")))
+       (.assign "i" (.bin .add (.var "i") (.val (.int 1))))
+
+/-- Full product program: set `s := 1`, set `i := a` (reading from env),
+then accumulate the body `n` times. The caller supplies
+`n := (b - a).toNat` and an environment with `"a"` and `"b"` bound. -/
+def productProg (n : Nat) : PureStmt :=
+  .seq (.assign "s" (.val (.int 1)))
+   (.seq (.assign "i" (.var "a"))
+    (.forN n productBody))
+
+/-- Post-loop env: `"a"`, `"b"`, `"s"`, `"i"` bound (in that order, so
+later sets shadow earlier ones for repeated names). -/
+def productEnv (a b s₀ i₀ : Int) : Env :=
+  ((((Env.empty.set "a" (.int a)).set "b" (.int b)).set
+    "s" (.int s₀)).set "i" (.int i₀))
+
+/-- Closed-form product `start * (start+1) * … * (start+k-1)`. -/
+def productFrom (start : Int) : Nat → Int
+  | 0     => 1
+  | k + 1 => start * productFrom (start + 1) k
+
+/-- Closed-form `∏_{i=a}^{b-1} i`. When `b ≤ a` this is `1` (empty
+product), because `(b - a).toNat = 0`. -/
+def rangeProd (a b : Int) : Int := productFrom a (b - a).toNat
+
+/-- Eval `.bin mul (.var x) (.var y)` when both vars hold ints. -/
+theorem eval_mul_vars (ρ : Env) (x y : Name) (a b : Int)
+    (hx : ρ x = some (Val.int a)) (hy : ρ y = some (Val.int b)) :
+    Expr.eval ρ (Expr.bin .mul (.var x) (.var y)) = some (Val.int (a * b)) := by
+  show (do let v₁ ← ρ x; let v₂ ← ρ y; BinOp.eval .mul v₁ v₂) = _
+  rw [hx, hy]; rfl
+
+/-- One step of the product loop body:
+from `(s, i)` to `(s * i, i + 1)`. -/
+theorem denote_productBody (a b s₀ i₀ : Int) :
+    denote productBody (productEnv a b s₀ i₀)
+      = (some (), productEnv a b (s₀ * i₀) (i₀ + 1)) := by
+  have hs : (productEnv a b s₀ i₀) "s" = some (.int s₀) := by
+    simp [productEnv, Env.set]
+  have hi : (productEnv a b s₀ i₀) "i" = some (.int i₀) := by
+    simp [productEnv, Env.set]
+  have he1 := eval_mul_vars (productEnv a b s₀ i₀) "s" "i" s₀ i₀ hs hi
+  have hi' : ((productEnv a b s₀ i₀).set "s" (Val.int (s₀ * i₀))) "i"
+              = some (Val.int i₀) := by simp [productEnv, Env.set]
+  have he2 := eval_add_var_const ((productEnv a b s₀ i₀).set
+                "s" (Val.int (s₀ * i₀))) "i" i₀ 1 hi'
+  simp only [productBody, denote, he1, he2]
+  congr 1
+  funext y
+  by_cases hyi : y = "i"
+  · subst hyi; simp [productEnv, Env.set]
+  · by_cases hys : y = "s"
+    · subst hys; simp [productEnv, Env.set, hyi]
+    · simp [productEnv, Env.set, hyi, hys]
+
+theorem productFrom_succ_right (a : Int) :
+    ∀ k, productFrom a (k + 1) = productFrom a k * (a + k) := by
+  intro k
+  induction k generalizing a with
+  | zero => show a * 1 = 1 * (a + 0); simp
+  | succ j ihj =>
+      show a * productFrom (a + 1) (j + 1)
+            = (a * productFrom (a + 1) j) * (a + ((j : Int) + 1))
+      rw [ihj (a + 1)]
+      have hj : ((j + 1 : Nat) : Int) = (j : Int) + 1 := by push_cast; rfl
+      -- LHS = a * (productFrom (a+1) j * (a+1+j))
+      -- RHS = (a * productFrom (a+1) j) * (a+j+1)
+      -- Use associativity and the fact that (a+1)+j = a+(j+1).
+      have hcomm : (a + 1) + (j : Int) = a + ((j : Int) + 1) := by omega
+      rw [hcomm, Int.mul_assoc]
+
+/-- General loop invariant: after `k` iterations from `(s₀, i₀)`, the
+accumulator is `s₀ * productFrom i₀ k` and the counter is `i₀ + k`. -/
+theorem denote_forN_productBody_general :
+    ∀ (k : Nat) (a b s₀ i₀ : Int),
+      denote (.forN k productBody) (productEnv a b s₀ i₀)
+        = (some (), productEnv a b (s₀ * productFrom i₀ k) (i₀ + k)) := by
+  intro k
+  induction k with
+  | zero =>
+      intro a b s₀ i₀
+      show (some (), productEnv a b s₀ i₀)
+        = (some (), productEnv a b
+            (s₀ * productFrom i₀ 0) (i₀ + ((0 : Nat) : Int)))
+      have h1 : s₀ * productFrom i₀ 0 = s₀ := by show s₀ * 1 = s₀; simp
+      have h2 : i₀ + ((0 : Nat) : Int) = i₀ := by simp
+      rw [h1, h2]
+  | succ k ih =>
+      intro a b s₀ i₀
+      rw [denote_forN_succ]
+      show (match denote productBody (productEnv a b s₀ i₀) with
+            | (none, ρ')   => (none, ρ')
+            | (some _, ρ') => denote (.forN k productBody) ρ')
+          = (some (), productEnv a b
+              (s₀ * productFrom i₀ (k + 1)) (i₀ + (k + 1 : Nat)))
+      rw [denote_productBody]
+      show denote (.forN k productBody)
+              (productEnv a b (s₀ * i₀) (i₀ + 1)) = _
+      rw [ih a b (s₀ * i₀) (i₀ + 1)]
+      have h1 : s₀ * productFrom i₀ (k + 1)
+                  = (s₀ * i₀) * productFrom (i₀ + 1) k := by
+        show s₀ * (i₀ * productFrom (i₀ + 1) k) = _
+        rw [← Int.mul_assoc]
+      have h2 : i₀ + ((k + 1 : Nat) : Int) = (i₀ + 1) + (k : Nat) := by
+        have : ((k + 1 : Nat) : Int) = (k : Int) + 1 := by push_cast; rfl
+        omega
+      rw [h1, h2]
+
+/-- **Marquee product identity.** From an env binding `"a" ↦ a, "b" ↦ b`,
+the denotation of `productProg (b - a).toNat` terminates with
+`"s" ↦ rangeProd a b` and `"i" ↦ a + (b - a).toNat`. -/
+theorem denote_productProg (a b : Int) :
+    denote (productProg (b - a).toNat)
+        ((Env.empty.set "a" (.int a)).set "b" (.int b))
+      = (some (), productEnv a b (rangeProd a b) (a + ((b - a).toNat : Int))) := by
+  show denote (.seq (.assign "s" (.val (.int 1)))
+              (.seq (.assign "i" (.var "a"))
+                    (.forN (b - a).toNat productBody)))
+              ((Env.empty.set "a" (.int a)).set "b" (.int b)) = _
+  -- Step `s := 1`.
+  show (match denote (.assign "s" (.val (.int 1)))
+              ((Env.empty.set "a" (.int a)).set "b" (.int b)) with
+        | (none, ρ')   => (none, ρ')
+        | (some _, ρ') => denote _ ρ') = _
+  show denote (.seq (.assign "i" (.var "a"))
+                    (.forN (b - a).toNat productBody))
+        (((Env.empty.set "a" (.int a)).set "b" (.int b)).set
+          "s" (.int 1)) = _
+  -- Step `i := a` (reads `"a"` from the env).
+  have ha :
+      (((Env.empty.set "a" (.int a)).set "b" (.int b)).set
+        "s" (.int 1)) "a" = some (.int a) := by
+    simp [Env.set]
+  show (match denote (.assign "i" (.var "a"))
+              (((Env.empty.set "a" (.int a)).set "b" (.int b)).set
+                "s" (.int 1)) with
+        | (none, ρ')   => (none, ρ')
+        | (some _, ρ') => denote (.forN (b - a).toNat productBody) ρ') = _
+  simp only [denote, Expr.eval, ha]
+  show denote (.forN (b - a).toNat productBody)
+        ((((Env.empty.set "a" (.int a)).set "b" (.int b)).set
+            "s" (.int 1)).set "i" (.int a)) = _
+  show denote (.forN (b - a).toNat productBody) (productEnv a b 1 a) = _
+  rw [denote_forN_productBody_general (b - a).toNat a b 1 a]
+  congr 1
+  show productEnv a b (1 * productFrom a (b - a).toNat) (a + ((b - a).toNat : Int))
+    = productEnv a b (rangeProd a b) (a + ((b - a).toNat : Int))
+  have h1 : 1 * productFrom a (b - a).toNat = rangeProd a b := by
+    show 1 * rangeProd a b = rangeProd a b
+    rw [Int.one_mul]
+  rw [h1]
+
 /-! ## Non-recursive procedure calls (inline)
 
 We add procedure calls as a *smart constructor* over the existing
@@ -1291,5 +1623,35 @@ theorem denote_pcall (params : List (Name × Expr)) (body : PureStmt)
       cases o2 with
       | none => rfl
       | some => rfl
+
+/-! ## Pure helpers: bridging denotational reasoning to `Machine.safe`
+
+A `PureHelper` packages a `PureStmt` body with a *return expression* read
+off the post-state. The compiled `main := embed body ; ret retExpr`
+actually fires a top-level `return`, so the operational machine
+terminates with `Thread.toValue = some v` for a non-trivial `v` — and a
+value-postcondition `φ : Val → Prop` is no longer collapsed to
+`φ Val.unit`. -/
+
+/-- Body plus a final return expression. -/
+structure PureHelper where
+  body : PureStmt
+  ret  : Expr
+
+/-- The helper's compiled `main`: run the body, then return `ret`. -/
+def PureHelper.main (h : PureHelper) : Stmt :=
+  .seq (embed h.body) (.ret h.ret)
+
+/-- Package a helper as a self-contained program: no procedures. -/
+def programOfHelper (h : PureHelper) : Program where
+  procs := noProcs
+  main  := h.main
+
+/-- Denotation lifted to a `Val`: run the body, then read `ret` in the
+post-environment. `none` propagates a stuck body or an ill-typed `ret`. -/
+def denoteHelper (h : PureHelper) (ρ₀ : Env) : Option Val :=
+  match denote h.body ρ₀ with
+  | (some _, ρ') => Expr.eval ρ' h.ret
+  | (none,   _)  => none
 
 end Agar

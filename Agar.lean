@@ -41,6 +41,16 @@
 --                       `minProc`, `absProc`, `gcdProc`, `sumProc`, …).
 --   * `Delab`         — pretty-printing for goal-state legibility.
 --   * `Algebra/{Counter,Lock}RA` — ghost RAs.
+--   * `Completeness`  — Theorem 15: from `Machine.safeFrom` of a
+--                       heap-free program, derive a closed Iris
+--                       derivation of `wp_⊤ (Thread.initial main) {⌜φ⌝}`.
+--   * `PureHelperBridge` — `PureHelper { body, ret }` packages a
+--                       `PureStmt` body with a return expression.
+--                       `Machine.safe_of_denoteHelper` bridges
+--                       `denoteHelper h Env.empty = some v ∧ φ v` to
+--                       `Machine.safe`-from-any-σ; composed with
+--                       completeness this yields a closed `wp_⊤` for
+--                       the helper from a purely denotational spec.
 --
 -- ## `Agar/Examples/` — end-to-end verifications
 --   Each file uses the program logic to verify a Agar program.
@@ -81,6 +91,7 @@ public import Agar.Iris.Algebra.LockRA
 public import Agar.Iris.Algebra.CounterRA
 public import Agar.Iris.Algebra.ThreadpoolRA
 public import Agar.Iris.Completeness
+public import Agar.Iris.PureHelperBridge
 
 -- Example programs and their closed-adequacy proofs, plus the
 -- per-WP-rule sanity suite.
