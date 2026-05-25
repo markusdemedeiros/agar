@@ -268,50 +268,45 @@ needs to be looked up by index and the structure form makes
 field-access trivial. -/
 structure Sim
     (composite : Program) (h_pname : Name) (h : Proc)
+    (pureBody : PureStmt) (retExpr : Expr)
     (helper_post : List Val → Val → Prop)
     (μ_abs μ_concrete : Machine) : Prop where
   mem_eq : μ_abs.mem = μ_concrete.mem
   length_eq : μ_abs.threads.length = μ_concrete.threads.length
   /-- Every concrete thread is heap-free. Established initially when the
-  composite is heap-free, and preserved by every step. Used to discharge
-  the InBody arm's heap-free obligations and to transport reducibility
-  across memory changes from other threads. -/
+  composite is heap-free, and preserved by every step. -/
   threads_heapFree :
     ∀ (i : Nat) (t : Thread), μ_concrete.threads[i]? = some t → t.heapFree
-  /-- Every concrete thread has `result = none` unless it has terminated
-  (`stmt = .skip ∧ cont = [] ∧ stack = []`). Established initially and
-  preserved by every step (since `doReturn` only writes a non-`none`
-  result when it also resets `stmt`/`cont`/`stack` to terminated form). -/
+  /-- Every concrete thread has `result = none` unless it has terminated. -/
   threads_result_wf :
     ∀ (i : Nat) (t : Thread), μ_concrete.threads[i]? = some t →
       t.result = none ∨ (t.stmt = .skip ∧ t.cont = [] ∧ t.stack = [])
-  /-- For each index `i`, the per-thread relation. Either the threads
-  match exactly (the `inl` arm), or the abstract has already collapsed
-  the helper call into its post-call state and the concrete is inside
-  the body (the `inr` arm). -/
+  /-- For each index `i`, the per-thread relation: either the threads
+  match exactly (Matching), or the abstract has already collapsed the
+  helper call into its post-call state and the concrete sits on the
+  body's deterministic pure trajectory (InBody, structural-denotational
+  form). -/
   thread_sim :
     ∀ (i : Nat), ∀ (t_a t_c : Thread),
       μ_abs.threads[i]? = some t_a →
       μ_concrete.threads[i]? = some t_c →
       -- Matching:
       (t_a = t_c) ∨
-      -- InBody: there exist a saved frame and a helper-produced value
-      -- `v_h` such that the abstract is post-call and the concrete is
-      -- inside the body. We additionally carry:
-      --   * `reducible`: the concrete thread can take a step.
-      -- The simulation step preserves these because the body never
-      -- gets stuck en route to its terminating `.ret` (standalone
-      -- helper safety) and never touches the heap. Heap-freeness of
-      -- the concrete thread is supplied uniformly by
-      -- `Sim.threads_heapFree`.
+      -- InBody: the concrete thread is reachable via `PureSteps` from
+      -- the body's near-end state `⟨.ret retExpr, [], ρ_f, frame ::
+      -- rest, none⟩`, where `ρ_f` is the body's denotational final env
+      -- and the unique return value `v_h = Expr.eval ρ_f retExpr`
+      -- satisfies `helper_post vs v_h`. The abstract is at the
+      -- post-call state.
       (∃ (vs : List Val) (v_h : Val) (cont : List Stmt) (env : Env)
-         (rv : Name) (rest : List Frame),
+         (rv : Name) (rest : List Frame) (ρ_f : Env),
         helper_post vs v_h ∧
         vs.length = h.params.length ∧
+        denote pureBody (bindParams h.params vs) = (some (), ρ_f) ∧
+        Expr.eval ρ_f retExpr = some v_h ∧
         t_a = (⟨.skip, cont, env.set rv v_h, rest, none⟩ : Thread) ∧
-        t_c.stack = (⟨rv, cont, env⟩ : Frame) :: rest ∧
-        t_c.result = none ∧
-        thread_reducible composite.procs μ_concrete.mem t_c)
+        PureSteps t_c
+          ⟨.ret retExpr, [], ρ_f, ⟨rv, cont, env⟩ :: rest, none⟩)
 
 /-! ## Auxiliary lemmas (left as `sorry` — see design notes)
 
@@ -700,21 +695,6 @@ private theorem tstep_sp_heapFree
     subst hch
     have hpres := Agar.Logic.tstep_heapFree_preserves htf hprog h
     exact hpres.2 ts hts
-
-/-- **Helper value extraction.** From a `StandaloneHelperSafe`, we get
-*existence* of a return value the body actually delivers with
-`helper_post`. This is now a one-liner because `StandaloneHelperSafe`
-bundles the termination witness. (We don't need uniqueness with
-respect to `helper_post`: the simulation argument picks the specific
-`v` that the body operationally produces, which is unique by
-`pstep_det` + heap/fork/noCall, and is one of the `helper_post`-satisfying
-values.) -/
-theorem helper_value_exists
-    {h : Proc} {vs : List Val} {helper_post : List Val → Val → Prop}
-    (h_safe : StandaloneHelperSafe h vs helper_post) :
-    ∃ v, helper_post vs v := by
-  obtain ⟨_n, _μ', _t, v, _, _, _, hpost⟩ := h_safe.reaches
-  exact ⟨v, hpost⟩
 
 /-! ## Body trajectory via the denotational pillar
 
@@ -1113,9 +1093,10 @@ heap-free), and every thread satisfies the result-well-formedness
 invariant. -/
 theorem simulation_init
     (composite : Program) (h_pname : Name) (h : Proc)
+    (pureBody : PureStmt) (retExpr : Expr)
     (helper_post : List Val → Val → Prop)
     (h_comp_heapFree : composite.main.heapFree) :
-    Sim composite h_pname h helper_post
+    Sim composite h_pname h pureBody retExpr helper_post
       (Machine.initial composite) (Machine.initial composite) where
   mem_eq := rfl
   length_eq := rfl
@@ -1143,23 +1124,26 @@ theorem simulation_init
 
 /-- **Simulation step.** Given `Sim μ_a μ_c` and a concrete step
 `μ_c → μ_c'`, the abstract takes 0 or 1 abstract steps to reach some
-`μ_a'` with `Sim μ_a' μ_c'`. Case analysis on the stepping thread's
-status (Matching vs InBody) and the kind of step. -/
+`μ_a'` with `Sim μ_a' μ_c'`. -/
 theorem simulation_step
     (composite : Program) (h_pname : Name) (h : Proc)
     (h_registered : composite.procs h_pname = some h)
-    (h_pure : h.body.heapFree ∧ h.body.forkFree ∧ h.body.noCall)
+    (pureBody : PureStmt) (retExpr : Expr)
+    (h_body_eq : h.body = .seq (embed pureBody) (.ret retExpr))
     (h_comp_hf : composite.heapFree)
     (helper_post : List Val → Val → Prop)
     (h_safe : ∀ vs, vs.length = h.params.length →
-              StandaloneHelperSafe h vs helper_post)
+              ∃ ρ_f v_h,
+                denote pureBody (bindParams h.params vs) = (some (), ρ_f) ∧
+                Expr.eval ρ_f retExpr = some v_h ∧
+                helper_post vs v_h)
     {μ_a μ_c μ_c' : Machine}
-    (hsim : Sim composite h_pname h helper_post μ_a μ_c)
+    (hsim : Sim composite h_pname h pureBody retExpr helper_post μ_a μ_c)
     (hstep : Machine.Step composite μ_c μ_c') :
     ∃ (n_abs : Nat) (μ_a' : Machine),
       n_abs ≤ 1 ∧
       Machine.StepStarN_abstract composite h_pname h helper_post n_abs μ_a μ_a' ∧
-      Sim composite h_pname h helper_post μ_a' μ_c' := by
+      Sim composite h_pname h pureBody retExpr helper_post μ_a' μ_c' := by
   sorry
 
 /-- Concatenation of `StepStarN_abstract` chains. -/
@@ -1185,22 +1169,27 @@ to an abstract `StepStarN_abstract` of length `≤ n` preserving Sim. -/
 theorem simulation_lift
     (composite : Program) (h_pname : Name) (h : Proc)
     (h_registered : composite.procs h_pname = some h)
-    (h_pure : h.body.heapFree ∧ h.body.forkFree ∧ h.body.noCall)
+    (pureBody : PureStmt) (retExpr : Expr)
+    (h_body_eq : h.body = .seq (embed pureBody) (.ret retExpr))
     (h_comp_hf : composite.heapFree)
     (helper_post : List Val → Val → Prop)
     (h_safe : ∀ vs, vs.length = h.params.length →
-              StandaloneHelperSafe h vs helper_post)
+              ∃ ρ_f v_h,
+                denote pureBody (bindParams h.params vs) = (some (), ρ_f) ∧
+                Expr.eval ρ_f retExpr = some v_h ∧
+                helper_post vs v_h)
     {μ_a μ_c μ_c' : Machine} {n : Nat}
-    (hsim : Sim composite h_pname h helper_post μ_a μ_c)
+    (hsim : Sim composite h_pname h pureBody retExpr helper_post μ_a μ_c)
     (htraj : Machine.StepStarN composite n μ_c μ_c') :
     ∃ (n_abs : Nat) (μ_a' : Machine),
       Machine.StepStarN_abstract composite h_pname h helper_post n_abs μ_a μ_a' ∧
-      Sim composite h_pname h helper_post μ_a' μ_c' := by
+      Sim composite h_pname h pureBody retExpr helper_post μ_a' μ_c' := by
   induction htraj generalizing μ_a with
   | refl _ => exact ⟨0, μ_a, .refl μ_a, hsim⟩
   | step h1 h2 ih =>
       obtain ⟨n_one, μ_mid, _hle, hone, hsim_mid⟩ :=
-        simulation_step composite h_pname h h_registered h_pure h_comp_hf
+        simulation_step composite h_pname h h_registered
+          pureBody retExpr h_body_eq h_comp_hf
           helper_post h_safe hsim h1
       obtain ⟨n_rest, μ_a', hrest, hsim'⟩ := ih hsim_mid
       exact ⟨n_one + n_rest, μ_a', hone.trans hrest, hsim'⟩
@@ -1208,17 +1197,15 @@ theorem simulation_lift
 /-- **Transfer.** Given `Sim μ_a μ_c` and the per-state safety of
 `μ_a` under the abstract relation, every thread of `μ_c` is
 value-or-reducible (and at index 0, the value satisfies
-`composite_post`). The InBody case appeals to standalone helper
-safety: every body-mid state is reducible. -/
+`composite_post`). The InBody case derives reducibility from the
+body's pure trajectory. -/
 theorem sim_transfer
     (composite : Program) (h_pname : Name) (h : Proc)
     (h_registered : composite.procs h_pname = some h)
-    (h_pure : h.body.heapFree ∧ h.body.forkFree ∧ h.body.noCall)
+    (pureBody : PureStmt) (retExpr : Expr)
     (helper_post : List Val → Val → Prop)
-    (h_safe : ∀ vs, vs.length = h.params.length →
-              StandaloneHelperSafe h vs helper_post)
     {μ_a μ_c : Machine} (composite_post : Val → Prop)
-    (hsim : Sim composite h_pname h helper_post μ_a μ_c)
+    (hsim : Sim composite h_pname h pureBody retExpr helper_post μ_a μ_c)
     (habs_safe_here :
       ∀ k t, μ_a.threads[k]? = some t →
         (∃ v, t.toValue = some v ∧ (k = 0 → composite_post v)) ∨
@@ -1227,21 +1214,16 @@ theorem sim_transfer
       (∃ v, t.toValue = some v ∧ (k = 0 → composite_post v)) ∨
       thread_reducible composite.procs μ_c.mem t := by
   intro k t_c hk
-  -- The Sim's length_eq guarantees μ_a.threads[k]? = some <something>.
   have hlen := hsim.length_eq
   have hmem := hsim.mem_eq
-  -- Extract the abstract counterpart at index k.
   cases ha : μ_a.threads[k]? with
   | none =>
-      -- impossible: lengths agree.
       exfalso
-      -- hk : μ_c.threads[k]? = some t_c → k < μ_c.threads.length
       have hk_lt : k < μ_c.threads.length := by
         rcases hkk : μ_c.threads[k]? with _ | t
         · rw [hkk] at hk; cases hk
         · exact List.getElem?_eq_some_iff.mp hkk |>.1
       have hk_lt_a : k < μ_a.threads.length := hlen ▸ hk_lt
-      -- so getElem? at k on μ_a.threads is some, contradiction.
       have ha2 : μ_a.threads[k]? ≠ none := by
         rw [List.getElem?_eq_some_iff.mpr ⟨hk_lt_a, rfl⟩]
         simp
@@ -1254,25 +1236,15 @@ theorem sim_transfer
         have := habs_safe_here k t_a ha
         rcases this with hval | hred
         · exact Or.inl hval
-        · -- thread_reducible_abstract → thread_reducible (with mems equal).
-          right
-          rcases hred with ⟨m', t', sp, hstep, _hno⟩ | ⟨x, args, vs, v, hstmt, hres, hargs, harity, hpost⟩
-          · -- Regular concrete step is available.
-            refine ⟨m', t', sp, ?_⟩
-            -- hmem : μ_a.mem = μ_c.mem
+        · right
+          rcases hred with ⟨m', t', sp, hstep, _hno⟩ |
+                          ⟨x, args, vs, v, hstmt, hres, hargs, harity, hpost⟩
+          · refine ⟨m', t', sp, ?_⟩
             rw [← hmem]; exact hstep
-          · -- A helper-call collapse — in the concrete world this
-            -- corresponds to actually firing the `.call` step
-            -- (which is itself a `thread_step`). We construct it.
-            -- After `subst heq` (above), t_c was substituted to t_a.
-            -- So hstmt/hres talk about t_a now.
-            -- Destructure t_a to expose its env/cont/stack/result.
-            rcases t_a with ⟨stmt_a, cont_a, env_a, stack_a, result_a⟩
+          · rcases t_a with ⟨stmt_a, cont_a, env_a, stack_a, result_a⟩
             simp only at hstmt hres hargs
             subst hstmt
             subst hres
-            -- Now the concrete thread = ⟨.call x h_pname args, cont_a, env_a, stack_a, none⟩.
-            -- Fire tstep_call.
             have htstep :
                 tstep composite.procs none μ_c.mem
                   ⟨.call x h_pname args, cont_a, env_a, stack_a, none⟩
@@ -1285,54 +1257,66 @@ theorem sim_transfer
               ⟨h.body, [], bindParams h.params vs,
                 ⟨x, cont_a, env_a⟩ :: stack_a, none⟩, none, ?_⟩
             exact ⟨none, htstep⟩
-      · -- InBody: concrete thread is mid-body. Reducibility comes
-        -- directly from the Sim invariant's `thread_reducible` field.
-        obtain ⟨_vs, _v_h, _cont, _env, _rv, _rest,
-                _hpost, _hlen, _hta, _htstk, _htres, hred⟩ := hbody
-        exact Or.inr hred
+      · -- InBody: concrete thread sits on the body's pure trajectory.
+        -- Reducibility from the trajectory: either t_c steps via pstep
+        -- (PureSteps.step) or t_c IS the near-end and `pstep_near_end_pop`
+        -- gives the doReturn step.
+        obtain ⟨vs, v_h, cont, env, rv, rest, ρ_f,
+                _hpost, _hlen, _hdenote, h_ret, _hta, h_traj⟩ := hbody
+        right
+        cases h_traj with
+        | refl =>
+            -- t_c = ⟨.ret retExpr, [], ρ_f, frame :: rest, none⟩. Pop fires.
+            have hpop := BodyTraj.pstep_near_end_pop retExpr ρ_f v_h
+              ⟨rv, cont, env⟩ rest h_ret
+            have hts := BodyTraj.pstep_tstep_procs composite.procs μ_c.mem _ _ hpop
+            refine ⟨μ_c.mem, _, none, ?_⟩
+            exact ⟨none, hts⟩
+        | @step _ t_mid _ hpstep _ =>
+            have hts := BodyTraj.pstep_tstep_procs composite.procs μ_c.mem _ _ hpstep
+            refine ⟨μ_c.mem, t_mid, none, ?_⟩
+            exact ⟨none, hts⟩
 
-/-- **The composition lemma.** Combines the helper's standalone safety
-(parametric in `vs`) with the composite's abstract safety to deliver
-concrete `Machine.safe`. -/
+/-- **The composition lemma.** Combines the helper's structural-
+denotational shape with the composite's abstract safety to deliver
+concrete `Machine.safe`. The "purity" premises (heapFree / forkFree /
+noCall) all follow from `h_body_eq`. -/
 theorem Machine.safe_compose
     (composite : Program) (h_pname : Name) (h : Proc)
     (h_registered : composite.procs h_pname = some h)
-    (h_pure : h.body.heapFree ∧ h.body.forkFree ∧ h.body.noCall)
+    (pureBody : PureStmt) (retExpr : Expr)
+    (h_body_eq : h.body = .seq (embed pureBody) (.ret retExpr))
     (h_comp_hf : composite.heapFree)
     (helper_post : List Val → Val → Prop)
+    -- For each parameter binding, the body converges denotationally to
+    -- some final environment whose retExpr-eval satisfies `helper_post`.
     (h_safe : ∀ vs, vs.length = h.params.length →
-              StandaloneHelperSafe h vs helper_post)
+              ∃ ρ_f v_h,
+                denote pureBody (bindParams h.params vs) = (some (), ρ_f) ∧
+                Expr.eval ρ_f retExpr = some v_h ∧
+                helper_post vs v_h)
     (composite_post : Val → Prop)
     (composite_abstract_safe :
       Machine.SafeTp_abstract composite h_pname h helper_post
         (Machine.initial composite) composite_post) :
     Machine.safe composite composite_post := by
-  -- Reduce `Machine.safe` to its definition: every reachable concrete
-  -- state has every thread value-or-reducible.
   intro n μ_c htraj k t_c hk
-  -- Lift the concrete trajectory to an abstract one via simulation.
   have hsim_init :
-      Sim composite h_pname h helper_post
+      Sim composite h_pname h pureBody retExpr helper_post
         (Machine.initial composite) (Machine.initial composite) :=
-    simulation_init composite h_pname h helper_post h_comp_hf.1
-  -- htraj has type Machine.StepStarN composite n (Machine.initial composite) μ_c.
-  -- The reduction `Machine.safe = Machine.SafeTp` from the empty heap
-  -- gives us the initial config.
+    simulation_init composite h_pname h pureBody retExpr helper_post h_comp_hf.1
   have htraj' : Machine.StepStarN composite n (Machine.initial composite) μ_c := htraj
   obtain ⟨n_abs, μ_a, habs_traj, hsim⟩ :=
-    simulation_lift composite h_pname h h_registered h_pure h_comp_hf
-      helper_post h_safe hsim_init htraj'
-  -- Apply abstract safety at the lifted abstract state.
+    simulation_lift composite h_pname h h_registered pureBody retExpr
+      h_body_eq h_comp_hf helper_post h_safe hsim_init htraj'
   have habs_here :
       ∀ k t, μ_a.threads[k]? = some t →
         (∃ v, t.toValue = some v ∧ (k = 0 → composite_post v)) ∨
         thread_reducible_abstract composite h_pname h helper_post μ_a.mem t := by
     intro k t hk
     exact composite_abstract_safe n_abs μ_a habs_traj k t hk
-  -- Transfer the disjunct from abstract to concrete via the
-  -- simulation.
-  exact sim_transfer composite h_pname h h_registered h_pure
-    helper_post h_safe composite_post hsim habs_here k t_c hk
+  exact sim_transfer composite h_pname h h_registered pureBody retExpr
+    helper_post composite_post hsim habs_here k t_c hk
 
 /-! ## Worked-example consumption smoke test
 
@@ -1345,9 +1329,10 @@ contains `sorry`s. -/
 
 section WorkedExampleSmokeTest
 
-/-- Trivial dummy helper. -/
+/-- Trivial dummy helper. Body is `.seq .skip (.ret (.val Val.unit))`
+to match the structural premise `h.body = .seq (embed pureBody) (.ret retExpr)`. -/
 def dummyHelper : Proc :=
-  { params := [], body := .ret (.val Val.unit) }
+  { params := [], body := .seq (embed .skip) (.ret (.val Val.unit)) }
 
 /-- Trivial dummy composite that registers `dummyHelper` under name `"h"`. -/
 def dummyComposite : Program where
@@ -1360,31 +1345,25 @@ client-supplied proofs (registration, purity, standalone safety,
 abstract safety). -/
 example : Machine.safe dummyComposite (fun _ => True) := by
   apply Machine.safe_compose dummyComposite "h" dummyHelper
+    (pureBody := .skip) (retExpr := .val Val.unit)
     (helper_post := fun _ _ => True)
   · -- h_registered : dummyComposite.procs "h" = some dummyHelper
     rfl
-  · -- h_pure : heapFree ∧ forkFree ∧ noCall
-    refine ⟨?_, ?_, ?_⟩
-    · -- heapFree of `.ret`
-      trivial
-    · -- forkFree
-      trivial
-    · -- noCall
-      trivial
+  · -- h_body_eq : dummyHelper.body = .seq (embed .skip) (.ret (.val Val.unit))
+    rfl
   · -- h_comp_hf : dummyComposite.heapFree
     refine ⟨?_, ?_⟩
     · -- main = .skip is heap-free
       trivial
-    · -- every proc is heap-free
-      intro name proc hp
+    · intro name proc hp
       by_cases hn : name = "h"
       · simp only [dummyComposite, hn, if_pos] at hp; cases hp
-        trivial
+        refine ⟨trivial, trivial⟩
       · simp only [dummyComposite, hn, if_neg, if_false] at hp
         cases hp
-  · -- h_safe : ∀ vs, vs.length = h.params.length → StandaloneHelperSafe …
-    intro vs hlen
-    sorry
+  · -- h_safe : denote .skip ρ converges trivially, retExpr evaluates to .unit
+    intro vs _hlen
+    exact ⟨bindParams dummyHelper.params vs, Val.unit, rfl, rfl, trivial⟩
   · -- composite_abstract_safe
     sorry
 
