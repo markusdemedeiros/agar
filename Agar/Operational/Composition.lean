@@ -1122,9 +1122,69 @@ theorem simulation_init
     cases hc
     exact Or.inl rfl
 
+/-! ### Preservation lemmas for off-target threads
+
+When the concrete machine steps thread `i` to `t'` (possibly with a
+spawn), threads at index `j ≠ i` (and `j < threads.length`) are
+unchanged. For these, all per-thread Sim invariants (heapFree,
+result_wf, Matching/InBody classification) carry over. Spawned threads
+appear at `threads.length` (only via `.fork`, which we case-handle). -/
+
+namespace SimStep
+
+variable {composite : Program} {h_pname : Name} {h : Proc}
+  {pureBody : PureStmt} {retExpr : Expr}
+  {helper_post : List Val → Val → Prop}
+
+/-- For an off-target thread (`j ≠ i`, `j < threads.length`), the
+post-step threads list returns the same thread. -/
+theorem set_append_other (threads : List Thread) (i j : Nat)
+    (t' : Thread) (sp : Option Thread)
+    (hj_lt : j < threads.length) (hne : j ≠ i) :
+    (threads.set i t' ++ sp.toList)[j]? = threads[j]? := by
+  have hj_lt' : j < (threads.set i t').length := by simpa using hj_lt
+  rw [List.getElem?_append_left hj_lt']
+  rw [List.getElem?_set]
+  simp [hne]
+
+/-- Set + append at index `i` returns the new thread. -/
+theorem set_append_at (threads : List Thread) (i : Nat) (t' : Thread)
+    (sp : Option Thread) (hi_lt : i < threads.length) :
+    (threads.set i t' ++ sp.toList)[i]? = some t' := by
+  have hi_lt' : i < (threads.set i t').length := by simpa using hi_lt
+  rw [List.getElem?_append_left hi_lt']
+  rw [List.getElem?_set]
+  simp [List.getElem?_eq_some_iff.mpr ⟨hi_lt, rfl⟩]
+
+/-- The spawned thread (when present) lands at index `threads.length`. -/
+theorem set_append_spawned (threads : List Thread) (i : Nat) (t' : Thread)
+    (ts : Thread) :
+    (threads.set i t' ++ ([ts] : List Thread))[threads.length]? = some ts := by
+  have : threads.length = (threads.set i t').length := by simp
+  rw [this]
+  rw [List.getElem?_append_right (Nat.le_refl _)]
+  simp
+
+end SimStep
+
 /-- **Simulation step.** Given `Sim μ_a μ_c` and a concrete step
 `μ_c → μ_c'`, the abstract takes 0 or 1 abstract steps to reach some
-`μ_a'` with `Sim μ_a' μ_c'`. -/
+`μ_a'` with `Sim μ_a' μ_c'`.
+
+Four cases (per the structural-denotational design):
+
+* **Matching/non-call**: concrete and abstract take the same regular
+  step (1 abstract step, Matching preserved).
+* **Matching/helper-call**: concrete enters body; abstract takes
+  `atomic_call` choosing `v_h` from `h_safe` (1 abstract step;
+  transition to InBody, witnessed by the `pure_steps_to_near_end`
+  trajectory).
+* **InBody/body-step**: concrete advances one rung of the trajectory;
+  abstract stays put (0 abstract steps; trajectory shortened by 1).
+* **InBody/.ret-pop**: concrete is at the near-end and `doReturn`
+  fires, landing exactly at the abstract's post-call state (0
+  abstract steps; transition back to Matching).
+-/
 theorem simulation_step
     (composite : Program) (h_pname : Name) (h : Proc)
     (h_registered : composite.procs h_pname = some h)
@@ -1144,7 +1204,482 @@ theorem simulation_step
       n_abs ≤ 1 ∧
       Machine.StepStarN_abstract composite h_pname h helper_post n_abs μ_a μ_a' ∧
       Sim composite h_pname h pureBody retExpr helper_post μ_a' μ_c' := by
-  sorry
+  -- Unpack the concrete step.
+  cases hstep with
+  | step i chosen t t' sp m m' threads hi hts =>
+  -- The stepping thread is heap-free, forcing chosen = none.
+  have htf : t.heapFree := hsim.threads_heapFree i t hi
+  have hchosen : chosen = none := tstep_heapFree_chosen_none htf hts
+  subst hchosen
+  -- Sim's structural fields.
+  have hlen : μ_a.threads.length = threads.length := hsim.length_eq
+  have hmem : μ_a.mem = m := hsim.mem_eq
+  -- Procs are all heap-free (for tstep_heapFree_preserves).
+  have hprog_hf : ∀ name proc, composite.procs name = some proc → proc.heapFree :=
+    h_comp_hf.2
+  -- Index `i` is in range on the abstract side.
+  have hi_lt : i < threads.length := (List.getElem?_eq_some_iff.mp hi).1
+  have hi_lt_a : i < μ_a.threads.length := hlen.symm ▸ hi_lt
+  -- The abstract thread at i.
+  have h_a_idx : μ_a.threads[i]? = some μ_a.threads[i] :=
+    List.getElem?_eq_some_iff.mpr ⟨hi_lt_a, rfl⟩
+  set t_a := μ_a.threads[i] with t_a_def
+  have hcls := hsim.thread_sim i t_a t h_a_idx hi
+  -- Preservation outcomes used in every case.
+  have hpres : t'.heapFree ∧ (∀ ts, sp = some ts → ts.heapFree) :=
+    Agar.Logic.tstep_heapFree_preserves htf hprog_hf hts
+  have hpres_result := hsim.threads_result_wf i t hi
+  have hres_t' : t'.result = none ∨ (t'.stmt = .skip ∧ t'.cont = [] ∧ t'.stack = []) :=
+    tstep_result_wf_preserves hpres_result hts
+  have hres_sp : ∀ ts, sp = some ts → ts.result = none := fun ts hts_eq =>
+    tstep_sp_result_none hts hts_eq
+  -- Classify thread i.
+  rcases hcls with heq | hbody
+  · -- ============ Case A: Matching at i (t_a = t). ============
+    subst heq
+    -- Subcase: is t.stmt a successful .call h_pname?
+    by_cases hcall : ∃ x args vs, t.stmt = .call x h_pname args ∧
+                                  evalArgs t.env args = some vs
+    · -- ===== Case A1: helper call. =====
+      obtain ⟨x, args, vs, hstmt, hargs⟩ := hcall
+      -- Destructure t to expose its env/cont/stack.
+      rcases t with ⟨stmt_t, cont_t, env_t, stack_t, result_t⟩
+      simp only at hstmt hargs
+      subst hstmt
+      -- The thread's `result` must be `none` (Sim invariant: a .call
+      -- thread can't be terminated).
+      rcases hpres_result with hresn | ⟨hsk, _, _⟩
+      · simp only at hresn; subst hresn
+      · cases hsk
+      -- Derive harity (vs.length = h.params.length) from successful tstep.
+      have harity : vs.length = h.params.length := by
+        have := hts
+        simp only [tstep, callFrom, h_registered, hargs] at this
+        by_cases hl : vs.length = h.params.length
+        · exact hl
+        · simp [hl] at this
+      -- Concrete tstep computes explicitly via tstep_call.
+      have htstep_call :
+          tstep composite.procs none m
+            ⟨.call x h_pname args, cont_t, env_t, stack_t, none⟩
+            = some (m, ⟨h.body, [], bindParams h.params vs,
+                       ⟨x, cont_t, env_t⟩ :: stack_t, none⟩, none) :=
+        tstep_call composite.procs m x h_pname args h vs cont_t env_t
+          stack_t h_registered hargs harity
+      rw [htstep_call] at hts
+      simp only [Option.some.injEq, Prod.mk.injEq] at hts
+      obtain ⟨hm_eq, ht'_eq, hsp_eq⟩ := hts
+      subst hm_eq; subst ht'_eq; subst hsp_eq
+      -- Pick v_h from h_safe at vs.
+      obtain ⟨ρ_f, v_h, h_denote, h_ret, h_post⟩ := h_safe vs harity
+      -- Build the abstract atomic_call step.
+      refine ⟨1, ⟨m, μ_a.threads.set i
+              ⟨.skip, cont_t, env_t.set x v_h, stack_t, none⟩⟩, ?_, ?_, ?_⟩
+      · exact Nat.le_refl _
+      · -- Abstract StepStarN_abstract of length 1.
+        refine .step (.atomic_call i x args vs v_h cont_t env_t stack_t
+          μ_a.mem μ_a.threads ?_ ?_ harity h_post) ?_
+        · -- μ_a.threads[i]? = some ⟨.call ...⟩
+          rw [h_a_idx]
+        · exact hargs
+        · -- Need to rewrite μ_a.mem ↦ m via hmem.
+          rw [hmem]
+          exact .refl _
+      · -- Build the new Sim.
+        constructor
+        · -- mem_eq
+          show m = m; rfl
+        · -- length_eq
+          show (μ_a.threads.set i _).length = (threads.set i _ ++ _).length
+          simp
+          exact hlen
+        · -- threads_heapFree
+          intro j t_j hj
+          -- Concrete: μ_c'.threads = threads.set i t' ++ [] = threads.set i t'
+          show t_j.heapFree
+          have hj' : (threads.set i ⟨h.body, [], bindParams h.params vs,
+                       ⟨x, cont_t, env_t⟩ :: stack_t, none⟩)[j]? = some t_j := by
+            have : threads.set i _ ++ ([] : List Thread) = threads.set i _ := by simp
+            rw [this] at hj; exact hj
+          by_cases hji : j = i
+          · subst hji
+            rw [SimStep.set_append_at threads i _ none hi_lt] at hj
+            simp at hj; subst hj
+            exact hpres.1
+          · have hj_lt : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have : (threads.set i _).length = threads.length := by simp
+              rw [List.getElem?_eq_none_iff.mpr] at hj'
+              · cases hj'
+              · simp; exact hge
+            have := SimStep.set_append_other threads i j _ none hj_lt hji
+            rw [this] at hj'
+            exact hsim.threads_heapFree j t_j hj'
+        · -- threads_result_wf
+          intro j t_j hj
+          show t_j.result = none ∨ _
+          have hj' : (threads.set i ⟨h.body, [], bindParams h.params vs,
+                       ⟨x, cont_t, env_t⟩ :: stack_t, none⟩)[j]? = some t_j := by
+            have : threads.set i _ ++ ([] : List Thread) = threads.set i _ := by simp
+            rw [this] at hj; exact hj
+          by_cases hji : j = i
+          · subst hji
+            rw [SimStep.set_append_at threads i _ none hi_lt] at hj
+            simp at hj; subst hj
+            left; rfl
+          · have hj_lt : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              rw [List.getElem?_eq_none_iff.mpr] at hj'
+              · cases hj'
+              · simp; exact hge
+            have := SimStep.set_append_other threads i j _ none hj_lt hji
+            rw [this] at hj'
+            exact hsim.threads_result_wf j t_j hj'
+        · -- thread_sim
+          intro j t_a_j t_c_j ha_j hc_j
+          by_cases hji : j = i
+          · -- New InBody at i.
+            subst hji
+            have hta_eq : t_a_j = ⟨.skip, cont_t, env_t.set x v_h,
+                                    stack_t, none⟩ := by
+              -- μ_a'.threads[i]? = some t_a_j and the abstract update sets index i.
+              have : (μ_a.threads.set i
+                      ⟨.skip, cont_t, env_t.set x v_h, stack_t, none⟩)[i]? =
+                    some ⟨.skip, cont_t, env_t.set x v_h, stack_t, none⟩ := by
+                rw [List.getElem?_set]
+                simp [hi_lt_a]
+              rw [this] at ha_j; simp at ha_j; exact ha_j.symm
+            have htc_eq : t_c_j = ⟨h.body, [], bindParams h.params vs,
+                                    ⟨x, cont_t, env_t⟩ :: stack_t, none⟩ := by
+              have : (threads.set i ⟨h.body, [], bindParams h.params vs,
+                       ⟨x, cont_t, env_t⟩ :: stack_t, none⟩ ++ ([] : List Thread))[i]?
+                    = some _ := by
+                simp
+                rw [List.getElem?_set]; simp [hi_lt]
+              rw [this] at hc_j; simp at hc_j; exact hc_j.symm
+            subst hta_eq; subst htc_eq
+            right
+            -- Construct InBody with PureSteps from body-start.
+            refine ⟨vs, v_h, cont_t, env_t, x, stack_t, ρ_f,
+              h_post, harity, h_denote, h_ret, rfl, ?_⟩
+            -- The trajectory.
+            have htraj := BodyTraj.pure_steps_to_near_end
+              pureBody retExpr (bindParams h.params vs) ρ_f
+              ⟨x, cont_t, env_t⟩ stack_t h_denote
+            rw [← h_body_eq] at htraj
+            exact htraj
+          · -- Other indices: unchanged on both sides.
+            have hj_lt_c : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have h_c_none : (threads.set i ⟨h.body, [], bindParams h.params vs,
+                           ⟨x, cont_t, env_t⟩ :: stack_t, none⟩ ++
+                          ([] : List Thread))[j]? = none := by
+                simp
+                rw [List.getElem?_eq_none_iff.mpr]; simp; exact hge
+              rw [h_c_none] at hc_j; cases hc_j
+            have hj_lt_a : j < μ_a.threads.length := hlen.symm ▸ hj_lt_c
+            -- μ_a' at j unchanged.
+            have ha_old : μ_a.threads[j]? = some t_a_j := by
+              have : (μ_a.threads.set i ⟨.skip, cont_t, env_t.set x v_h,
+                                          stack_t, none⟩)[j]? =
+                     μ_a.threads[j]? := by
+                rw [List.getElem?_set]; simp [hji]
+              rw [this] at ha_j; exact ha_j
+            have hc_old : threads[j]? = some t_c_j := by
+              have : (threads.set i ⟨h.body, [], bindParams h.params vs,
+                       ⟨x, cont_t, env_t⟩ :: stack_t, none⟩ ++
+                      ([] : List Thread))[j]? = threads[j]? := by
+                rw [show threads.set i _ ++ ([] : List Thread) = threads.set i _ from by simp]
+                exact SimStep.set_append_other threads i j _ none hj_lt_c hji
+              rw [this] at hc_j; exact hc_j
+            exact hsim.thread_sim j t_a_j t_c_j ha_old hc_old
+    · -- ===== Case A2: regular step (non-helper-call). =====
+      -- Concrete: tstep fires. Abstract: same tstep (regular constructor).
+      refine ⟨1, ⟨m', μ_a.threads.set i t' ++ sp.toList⟩, Nat.le_refl _, ?_, ?_⟩
+      · refine .step (.regular i none t t' sp μ_a.mem m' μ_a.threads ?_ ?_ ?_) ?_
+        · rw [h_a_idx]
+        · exact hcall
+        · rw [hmem]; exact hts
+        · exact .refl _
+      · -- New Sim.
+        constructor
+        · -- mem_eq
+          show m' = m'; rfl
+        · -- length_eq
+          show (μ_a.threads.set i t' ++ sp.toList).length =
+               (threads.set i t' ++ sp.toList).length
+          simp [hlen]
+        · -- threads_heapFree
+          intro j t_j hj
+          by_cases hji : j = i
+          · subst hji
+            rw [SimStep.set_append_at threads i t' sp hi_lt] at hj
+            simp at hj; subst hj
+            exact hpres.1
+          · by_cases hjsp : j < threads.length
+            · have := SimStep.set_append_other threads i j t' sp hjsp hji
+              rw [this] at hj
+              exact hsim.threads_heapFree j t_j hj
+            · -- j ≥ threads.length: only possible if j = threads.length and sp = some _.
+              push_neg at hjsp
+              cases sp with
+              | none =>
+                  -- sp.toList = []; threads.set i t' has length = threads.length.
+                  exfalso
+                  have : (threads.set i t' ++ ([] : List Thread)).length = threads.length := by simp
+                  rw [List.getElem?_eq_none_iff.mpr] at hj
+                  · cases hj
+                  · simp; exact hjsp
+              | some ts =>
+                  -- sp.toList = [ts]. threads.set + append has length = threads.length + 1.
+                  have hlen_eq : j = threads.length := by
+                    have hj_lt' : j < (threads.set i t' ++ [ts]).length := by
+                      have := List.getElem?_eq_some_iff.mp hj
+                      simpa using this.1
+                    have : j < threads.length + 1 := by simpa using hj_lt'
+                    omega
+                  subst hlen_eq
+                  rw [SimStep.set_append_spawned threads i t' ts] at hj
+                  simp at hj; subst hj
+                  exact hpres.2 ts rfl
+        · -- threads_result_wf
+          intro j t_j hj
+          by_cases hji : j = i
+          · subst hji
+            rw [SimStep.set_append_at threads i t' sp hi_lt] at hj
+            simp at hj; subst hj
+            exact hres_t'
+          · by_cases hjsp : j < threads.length
+            · have := SimStep.set_append_other threads i j t' sp hjsp hji
+              rw [this] at hj
+              exact hsim.threads_result_wf j t_j hj
+            · push_neg at hjsp
+              cases sp with
+              | none =>
+                  exfalso
+                  rw [List.getElem?_eq_none_iff.mpr] at hj
+                  · cases hj
+                  · simp; exact hjsp
+              | some ts =>
+                  have hlen_eq : j = threads.length := by
+                    have hj_lt' : j < (threads.set i t' ++ [ts]).length := by
+                      have := List.getElem?_eq_some_iff.mp hj
+                      simpa using this.1
+                    have : j < threads.length + 1 := by simpa using hj_lt'
+                    omega
+                  subst hlen_eq
+                  rw [SimStep.set_append_spawned threads i t' ts] at hj
+                  simp at hj; subst hj
+                  left; exact hres_sp ts rfl
+        · -- thread_sim
+          intro j t_a_j t_c_j ha_j hc_j
+          by_cases hji : j = i
+          · subst hji
+            have hta_eq : t_a_j = t' := by
+              rw [SimStep.set_append_at μ_a.threads i t' sp hi_lt_a] at ha_j
+              simp at ha_j; exact ha_j.symm
+            have htc_eq : t_c_j = t' := by
+              rw [SimStep.set_append_at threads i t' sp hi_lt] at hc_j
+              simp at hc_j; exact hc_j.symm
+            subst hta_eq; subst htc_eq
+            exact Or.inl rfl
+          · by_cases hjsp : j < threads.length
+            · have hjsp_a : j < μ_a.threads.length := hlen.symm ▸ hjsp
+              have ha_old := SimStep.set_append_other μ_a.threads i j t' sp hjsp_a hji
+              have hc_old := SimStep.set_append_other threads i j t' sp hjsp hji
+              rw [ha_old] at ha_j
+              rw [hc_old] at hc_j
+              exact hsim.thread_sim j t_a_j t_c_j ha_j hc_j
+            · push_neg at hjsp
+              cases sp with
+              | none =>
+                  exfalso
+                  rw [List.getElem?_eq_none_iff.mpr] at hc_j
+                  · cases hc_j
+                  · simp; exact hjsp
+              | some ts =>
+                  have hlen_eq : j = threads.length := by
+                    have hj_lt' : j < (threads.set i t' ++ [ts]).length := by
+                      have := List.getElem?_eq_some_iff.mp hc_j
+                      simpa using this.1
+                    have : j < threads.length + 1 := by simpa using hj_lt'
+                    omega
+                  subst hlen_eq
+                  rw [SimStep.set_append_spawned threads i t' ts] at hc_j
+                  rw [hlen] at ha_j
+                  rw [SimStep.set_append_spawned μ_a.threads i t' ts] at ha_j
+                  simp at ha_j hc_j
+                  subst ha_j; subst hc_j
+                  exact Or.inl rfl
+  · -- ============ Case B: InBody at i. ============
+    obtain ⟨vs, v_h, cont_h, env_h, rv_h, rest_h, ρ_f,
+            h_post, h_arity, h_denote, h_ret, h_ta_eq, h_traj⟩ := hbody
+    -- The abstract doesn't move in either sub-case.
+    -- Concrete step's behavior is determined by the trajectory.
+    cases h_traj with
+    | refl =>
+        -- t = ⟨.ret retExpr, [], ρ_f, ⟨rv_h, cont_h, env_h⟩ :: rest_h, none⟩
+        have hpop := BodyTraj.pstep_near_end_pop retExpr ρ_f v_h
+                      ⟨rv_h, cont_h, env_h⟩ rest_h h_ret
+        have hts_pop := BodyTraj.pstep_tstep_procs composite.procs m _ _ hpop
+        -- tstep is a function, so the actual hts forces t' and m'.
+        rw [hts_pop] at hts
+        simp only [Option.some.injEq, Prod.mk.injEq] at hts
+        obtain ⟨hm_eq, ht'_eq, hsp_eq⟩ := hts
+        subst hm_eq; subst ht'_eq; subst hsp_eq
+        -- Now t' = post-frame state = t_a. Abstract stays put.
+        refine ⟨0, μ_a, Nat.zero_le _, .refl _, ?_⟩
+        constructor
+        · show μ_a.mem = m
+          exact hmem
+        · show μ_a.threads.length = (threads.set i _ ++ ([] : List Thread)).length
+          simp [hlen]
+        · intro j t_j hj
+          by_cases hji : j = i
+          · subst hji
+            have : (threads.set i _ ++ ([] : List Thread))[i]? = some _ := by
+              simp; rw [List.getElem?_set]; simp [hi_lt]
+            rw [this] at hj; simp at hj; subst hj
+            exact hpres.1
+          · have hj_lt : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have : (threads.set i _ ++ ([] : List Thread))[j]? = none := by
+                rw [show threads.set i _ ++ ([] : List Thread) = threads.set i _ from by simp]
+                rw [List.getElem?_eq_none_iff.mpr]; simp; exact hge
+              rw [this] at hj; cases hj
+            have heq : threads.set i _ ++ ([] : List Thread) = threads.set i _ := by simp
+            rw [heq] at hj
+            have := SimStep.set_append_other threads i j _ none hj_lt hji
+            simp at this; rw [this] at hj
+            exact hsim.threads_heapFree j t_j hj
+        · intro j t_j hj
+          by_cases hji : j = i
+          · subst hji
+            have : (threads.set i _ ++ ([] : List Thread))[i]? = some _ := by
+              simp; rw [List.getElem?_set]; simp [hi_lt]
+            rw [this] at hj; simp at hj; subst hj
+            exact hres_t'
+          · have hj_lt : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have : (threads.set i _ ++ ([] : List Thread))[j]? = none := by
+                rw [show threads.set i _ ++ ([] : List Thread) = threads.set i _ from by simp]
+                rw [List.getElem?_eq_none_iff.mpr]; simp; exact hge
+              rw [this] at hj; cases hj
+            have heq : threads.set i _ ++ ([] : List Thread) = threads.set i _ := by simp
+            rw [heq] at hj
+            have := SimStep.set_append_other threads i j _ none hj_lt hji
+            simp at this; rw [this] at hj
+            exact hsim.threads_result_wf j t_j hj
+        · intro j t_a_j t_c_j ha_j hc_j
+          by_cases hji : j = i
+          · -- new t_c_j = post-frame state = t_a (the abstract's thread at i).
+            subst hji
+            have htc_eq : t_c_j = ⟨.skip, cont_h, env_h.set rv_h v_h, rest_h, none⟩ := by
+              have : (threads.set i ⟨.skip, cont_h, env_h.set rv_h v_h, rest_h, none⟩ ++
+                      ([] : List Thread))[i]? =
+                    some ⟨.skip, cont_h, env_h.set rv_h v_h, rest_h, none⟩ := by
+                simp; rw [List.getElem?_set]; simp [hi_lt]
+              rw [this] at hc_j; simp at hc_j; exact hc_j.symm
+            subst htc_eq
+            -- t_a_j = μ_a.threads[i] (unchanged).
+            rw [h_a_idx] at ha_j; simp at ha_j; subst ha_j
+            left; exact h_ta_eq
+          · -- Other indices.
+            have hj_lt_c : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have : (threads.set i _ ++ ([] : List Thread))[j]? = none := by
+                rw [show threads.set i _ ++ ([] : List Thread) = threads.set i _ from by simp]
+                rw [List.getElem?_eq_none_iff.mpr]; simp; exact hge
+              rw [this] at hc_j; cases hc_j
+            have heq : threads.set i _ ++ ([] : List Thread) = threads.set i _ := by simp
+            rw [heq] at hc_j
+            have := SimStep.set_append_other threads i j _ none hj_lt_c hji
+            simp at this; rw [this] at hc_j
+            exact hsim.thread_sim j t_a_j t_c_j ha_j hc_j
+    | @step _ t_mid _ hpstep h_rest =>
+        -- pstep t = some t_mid; the concrete tstep should match via pstep_tstep_procs.
+        have hts_step := BodyTraj.pstep_tstep_procs composite.procs m _ _ hpstep
+        rw [hts_step] at hts
+        simp only [Option.some.injEq, Prod.mk.injEq] at hts
+        obtain ⟨hm_eq, ht'_eq, hsp_eq⟩ := hts
+        subst hm_eq; subst ht'_eq; subst hsp_eq
+        -- Abstract stays put; new μ_c'.threads[i] = t_mid, with shortened trajectory h_rest.
+        refine ⟨0, μ_a, Nat.zero_le _, .refl _, ?_⟩
+        constructor
+        · show μ_a.mem = m
+          exact hmem
+        · show μ_a.threads.length = (threads.set i _ ++ ([] : List Thread)).length
+          simp [hlen]
+        · intro j t_j hj
+          by_cases hji : j = i
+          · subst hji
+            have : (threads.set i t_mid ++ ([] : List Thread))[i]? = some t_mid := by
+              simp; rw [List.getElem?_set]; simp [hi_lt]
+            rw [this] at hj; simp at hj; subst hj
+            exact hpres.1
+          · have hj_lt : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have : (threads.set i t_mid ++ ([] : List Thread))[j]? = none := by
+                rw [show threads.set i t_mid ++ ([] : List Thread) = threads.set i t_mid from by simp]
+                rw [List.getElem?_eq_none_iff.mpr]; simp; exact hge
+              rw [this] at hj; cases hj
+            have heq : threads.set i t_mid ++ ([] : List Thread) = threads.set i t_mid := by simp
+            rw [heq] at hj
+            have := SimStep.set_append_other threads i j t_mid none hj_lt hji
+            simp at this; rw [this] at hj
+            exact hsim.threads_heapFree j t_j hj
+        · intro j t_j hj
+          by_cases hji : j = i
+          · subst hji
+            have : (threads.set i t_mid ++ ([] : List Thread))[i]? = some t_mid := by
+              simp; rw [List.getElem?_set]; simp [hi_lt]
+            rw [this] at hj; simp at hj; subst hj
+            exact hres_t'
+          · have hj_lt : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have : (threads.set i t_mid ++ ([] : List Thread))[j]? = none := by
+                rw [show threads.set i t_mid ++ ([] : List Thread) = threads.set i t_mid from by simp]
+                rw [List.getElem?_eq_none_iff.mpr]; simp; exact hge
+              rw [this] at hj; cases hj
+            have heq : threads.set i t_mid ++ ([] : List Thread) = threads.set i t_mid := by simp
+            rw [heq] at hj
+            have := SimStep.set_append_other threads i j t_mid none hj_lt hji
+            simp at this; rw [this] at hj
+            exact hsim.threads_result_wf j t_j hj
+        · intro j t_a_j t_c_j ha_j hc_j
+          by_cases hji : j = i
+          · subst hji
+            -- New t_c_j = t_mid, with shorter trajectory.
+            have htc_eq : t_c_j = t_mid := by
+              have : (threads.set i t_mid ++ ([] : List Thread))[i]? = some t_mid := by
+                simp; rw [List.getElem?_set]; simp [hi_lt]
+              rw [this] at hc_j; simp at hc_j; exact hc_j.symm
+            subst htc_eq
+            -- t_a_j unchanged.
+            rw [h_a_idx] at ha_j; simp at ha_j; subst ha_j
+            right
+            exact ⟨vs, v_h, cont_h, env_h, rv_h, rest_h, ρ_f,
+                   h_post, h_arity, h_denote, h_ret, h_ta_eq, h_rest⟩
+          · have hj_lt_c : j < threads.length := by
+              by_contra hge
+              push_neg at hge
+              have : (threads.set i t_mid ++ ([] : List Thread))[j]? = none := by
+                rw [show threads.set i t_mid ++ ([] : List Thread) = threads.set i t_mid from by simp]
+                rw [List.getElem?_eq_none_iff.mpr]; simp; exact hge
+              rw [this] at hc_j; cases hc_j
+            have heq : threads.set i t_mid ++ ([] : List Thread) = threads.set i t_mid := by simp
+            rw [heq] at hc_j
+            have := SimStep.set_append_other threads i j t_mid none hj_lt_c hji
+            simp at this; rw [this] at hc_j
+            exact hsim.thread_sim j t_a_j t_c_j ha_j hc_j
 
 /-- Concatenation of `StepStarN_abstract` chains. -/
 theorem Machine.StepStarN_abstract.trans
