@@ -515,6 +515,17 @@ Each link's status:
 
     *Caveat discovered during the implementation:* `completeness_open` produces a wp on `t_init` running **standalone** (the SafeTp premise is `∀ σ, SafeTp prog ⟨σ, [t_init]⟩ φ`, i.e., a singleton thread pool with empty stack). But the residual at a `wp_call` site has the helper running with a **non-empty stack** (the caller frame). So `completeness_open` alone does not close a call-site goal; it needs to be paired with a stack-frame embedding lemma — exactly the work the Route B bridge does for the pure case. Routes A and B are complementary: A delivers a standalone-callee wp from operational SafeTp; B (or a state-bearing analogue) lifts that into the callee-frame shape.
 
+    **Stack-embedding lemma — attempted 2026-05-26, deferred.** The natural shape is:
+    ```
+    wp procs fp ⊤ t (fun v => wp procs fp ⊤ (postDoReturnThread frame rest v) Φ)
+      ⊢ wp procs fp ⊤ (stackExt t [frame, rest]) Φ
+    ```
+    where `stackExt t extra` appends `extra` to `t.stack`. The structure of the proof: Löb induction over thread states, with a *coupling invariant* "extended thread has stack `t.stack ++ [frame, rest]`, otherwise identical to standalone." The coupling is preserved by every `tstep` *except* `.ret e` with `t.stack = []`, where standalone terminates at `(.skip, [], _, [], some v)` while extended pops `frame` and continues at `postDoReturnThread frame rest v`. The Löb argument: at each step, either coupling is preserved (recurse via IH) or the divergence fires (extract `Φ_inner v` from the wp value rule applied to the terminated standalone state, which equals the wp at the extended post-state by definition of Φ_inner).
+
+    *Why deferred:* the operational coupling lemma (one `tstep` on extended mirrored by one on standalone modulo the .ret divergence) requires a full case analysis on `Stmt` × `chosen` × stack/cont structure — ~13 stmt cases with sub-cases. Wrote a draft (`Agar/Operational/StackExt.lean`) but hit ~30 micro-errors in the case analysis (Lean's `nomatch`/`Option.noConfusion`/`split at` interactions) that aren't substantively hard but eat time. The file was removed pending a more careful re-attempt. The right path is probably Iris-level (use existing `wp_<stmt>` rules per case under a Löb hypothesis) rather than going through a standalone operational coupling lemma.
+
+    *Why this is the right next step for Route A:* with the stack-embedding in hand, the call-site pipeline becomes mechanical: an operational SafeTp witness for the helper (running standalone) → `completeness_open` → standalone wp → stack-embedding → callee-frame wp matching the `wp_call` residual. The pure-helper case will then have two proofs (the existing `wp_callee_of_pure_helper` via `PureSteps`, and a `completeness_open`+stack-embedding route), and the state-bearing case will gain its first proof.
+
 4. **Open-context Theorem 15 used inline at the .call site** — *trivial once (3) lands*. Replace the current `wp_call → wp_callee_of_pure_helper → wp_ret_top` chain with `wp_call → (open Theorem 15)` applied to a SafeTp witness obtained via link (2).
 
 The pure-helper case becomes a degenerate instance: the helper has no state effects, so its Hoare triple is vacuous-on-state, and the heap-fragment ownership is `emp` — at which point link (1)+(2)+(3) collapse to "the `denote` equation," recovering the current bridge as a corollary.
