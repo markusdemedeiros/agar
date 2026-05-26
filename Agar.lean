@@ -95,6 +95,7 @@ public import Agar.Iris.PureHelperBridge
 public import Agar.Operational.StackExt
 public import Agar.Iris.StackPush
 public import Agar.Examples.SimpleRangeProdCompositionRouteA
+public import Agar.Examples.RangeProdStdDo
 
 -- Example programs and their closed-adequacy proofs, plus the
 -- per-WP-rule sanity suite.
