@@ -80,19 +80,40 @@ theorem tstep_stackExt_terminated_det
       cases h
       exact ⟨rfl, rfl, rfl⟩
 
-/-- **Stack-push wp lemma.** A wp on `t` whose post is a wp at
-`postDoReturnThread frame rest v` lifts to a wp on `stackExt t (frame :: rest)`.
+/-- **Stack-push wp lemma: callee-frame embedding for `wp`.**
 
-Proof: Löb induction over `∀ t`. Case-split on the wp_unfold of HW:
+This is the Iris-level analogue of "extending a safe thread's stack
+preserves safety, threading the saved frame's continuation through to
+the post." Concretely: take a wp on `t` (where `t` thinks it's running
+standalone with an empty stack) whose post says "when `t` terminates
+with value `v`, the rest of the trace at `postDoReturnThread frame rest v`
+is itself safe," and produce a wp on `stackExt t (frame :: rest)` (the
+same thread but with a caller frame embedded at the bottom of its stack).
 
-* Value disjunct (`t.toValue = some v`): the extended thread fires one
-  `.skip` fall-through `doReturn` step landing at `postDoReturnThread`.
-* Step disjunct: each step on the extended thread is either lifted from
-  a step on `t` (via `tstep_stackExt_preserve`) or is the exceptional
-  `.ret`-empty case in which the step lands directly at
+**Where it sits in the Route A bridge.** This is step 3 of
+`wp_callee_routeA`. The pipeline so far:
+* `completeness_open` gives a wp on the helper running standalone
+  (empty stack, the helper's `.ret` terminates the thread).
+* `wp_wand` reshapes the post from the operational spec into the
+  caller's continuation wp.
+* **`wp_stack_push` (this lemma)** then embeds the helper into a frame:
+  the helper's `.ret` no longer terminates — it `doReturn`s into the
+  caller's continuation, which is exactly what `wp_call` leaves behind
+  as a residual.
+
+**Proof: Löb induction over `∀ t`.** Two cases off `wp_unfold`:
+
+* *Value disjunct* (`t.toValue = some v`): the extended thread fires
+  one `.skip` fall-through `doReturn` step landing at
+  `postDoReturnThread`, and the caller's post fires.
+* *Step disjunct*: each step on the extended thread is either lifted
+  from a step on `t` (via `tstep_stackExt_preserve`) or is the
+  exceptional `.ret e`-empty case in which the step lands directly at
   `postDoReturnThread`. In the `.ret`-empty case, `t`'s own step
-  terminates `t`, and the IH applied to that terminated thread re-enters
-  the value branch. -/
+  terminates `t`, and the IH applied to that terminated thread
+  re-enters the value branch. The `.ret`-with-empty-stack wrinkle
+  (HYPOTHESIS.md §8.5) is handled inline rather than via a separate
+  operational coupling lemma. -/
 theorem wp_stack_push
     (procs : Name → Option Proc) (fp : IProp GF)
     (frame : Frame) (rest : List Frame) (Φ : Val → IProp GF) (t : Thread) :

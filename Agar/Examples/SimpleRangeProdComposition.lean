@@ -20,6 +20,14 @@ public import Agar.Iris.CalleeBridge
 
 /-! # Simplified CAS-merge composition example (no interference)
 
+**Status: historical / legacy route.** This file predates the Route A
+showcase and uses the original `Machine.safe_compose` operational
+bridge (now marked `@[deprecated]`). It is kept as a reference for the
+pre-Std.Do pure-helper story. For the current pipeline that dispatches
+a pure helper's `Std.Do.Triple` spec down to closed safety, see
+`SimpleRangeProdHelperSafe` + `SimpleRangeProdCompositionRouteA` +
+`RangeProdStdDo`, with the design in `HYPOTHESIS.md` §8.
+
 Two threads each call a pure `rangeProd` helper. No shared memory, no
 CAS, no spin — just a single `fork` and two parallel helper calls. The
 helper is one designated pure proc; the worker thread and the main
@@ -110,8 +118,18 @@ We discharge everything except `composite_abstract_safe`, which is
 the client-side proof obligation (verifying the composite under the
 abstract-step relation where helper calls are atomic). That stays as a
 `sorry` here — the point of this example is to see whether the
-`safe_compose` API plugs in cleanly. -/
+`safe_compose` API plugs in cleanly.
 
+**RETIRED 2026-05-26.** `Machine.safe_compose` itself is deprecated in
+favor of the Iris/Route A pipeline. The Iris walkthrough lives at
+`rangeProd_composite_walkthrough` (this file) and
+`rangeProd_composite_walkthrough_RouteA` (sibling file); both are
+fully closed. This `safe_compose`-based proof attempt is preserved
+only as a historical illustration of the abandoned API shape; the
+`sorry`s here are inherited from the deprecated route. -/
+
+set_option linter.deprecated false in
+@[deprecated "Use rangeProd_composite_walkthrough or rangeProd_composite_walkthrough_RouteA (both closed). See HYPOTHESIS.md §8.6." (since := "2026-05-26")]
 theorem rangeProd_composite_safe (n : Nat) :
     Machine.safe (rangeProdComposite n) (fun _ => True) := by
   apply Machine.safe_compose (rangeProdComposite n) "rangeProd" (rangeProd n)

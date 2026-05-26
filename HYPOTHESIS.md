@@ -1,5 +1,68 @@
 # Two routes for the callee-frame wp gap
 
+> **2026-05-26 final update.** Route A is **end-to-end closed** for the
+> pure-helper case. The headline showcase — taking an `Std.Do.Triple`
+> over the helper's denotation and folding it down to a closed
+> `Machine.safe` of the composite via Iris — runs through the
+> following pipeline:
+>
+> ```
+> Std.Do.Triple over denote(rangeProd_body)    ┐
+>   │  Triple.iff unfolds; direct induction    │
+>   ▼                                          │ Operational
+> rangeProd_denote_converges                   │ side
+>   │  denote_sound (pure adequacy)            │ (no Iris, no procs)
+>   ▼                                          │
+> helper_init_reaches_terminal (PureSteps)     │
+>   │  helperProg_stepStarN_chain              │
+>   ▼                                          │
+> helperProg_safe : SafeTp under noProcs       ┘
+>   │  SafeTp_procs_irrel_of_strict (StrictHelperShape — no .call/.fork)
+>   ▼
+> helper_safeTp : SafeTp under composite.procs ┐
+>   │  completeness_open (Theorem 15, open-context — no fresh AgarG)
+>   ▼                                          │
+> wp at helper_init                            │ Iris side
+>   │  wp_wand (reshape post)                  │ (fork_post := True
+>   ▼                                          │  threaded throughout)
+> wp at helper_init w/ post-doReturn wp        │
+>   │  BodyTraj.wp_stack_push (callee-frame embedding)
+>   ▼                                          │
+> wp at wp_call residual                       ┘  ⟵ wp_callee_routeA
+>   │
+>   │  Iris-level walkthrough: wp_seq → wp_fork (True) → wp_call (True)
+>   │                          → wp_callee_routeA → wp_ret_top
+>   ▼
+> wp at Thread.initial composite.main
+>   │  wp_safe_bupd (pick fork_post := True for the existential)
+>   ▼
+> Machine.safe rangeProdComposite3 (fun _ => True)  ✓
+> ```
+>
+> `rangeProd_composite_walkthrough_RouteA` compiles. The two list-
+> bookkeeping sorrys (`set_append_other`, `set_append_at`) are also
+> closed. The only remaining sorrys are in the **legacy operational
+> `Machine.safe_compose` route** (`simulation_step` and one smoke-test
+> example), which §8.6 marks as retired in favor of the Iris path.
+>
+> **File map.** The pipeline is split across two example files plus
+> the supporting infrastructure:
+>
+> * `Agar/Examples/SimpleRangeProdHelperSafe.lean` — Std.Do triple →
+>   operational `Machine.SafeTp` (the operational side of the diagram).
+> * `Agar/Examples/SimpleRangeProdCompositionRouteA.lean` — operational
+>   SafeTp → Iris wp → `Machine.safe` of the composite (the Iris
+>   walkthrough).
+> * `Agar/Examples/RangeProdStdDo.lean` — thin top-level entry point
+>   pointing at both halves.
+> * `Agar/Iris/Completeness.lean` — `completeness_open` (Theorem 15
+>   open-context variant).
+> * `Agar/Iris/StackPush.lean` — `BodyTraj.wp_stack_push`.
+> * `Agar/Operational/StackExt.lean` — `stackExt` + supporting `tstep`
+>   lemmas underneath `wp_stack_push`.
+> * `Agar/Operational/StrictHelper.lean` — `StrictHelperShape` +
+>   `SafeTp_procs_irrel_of_strict`.
+
 > **2026-05-25 update.** Both routes were attempted (see §8 at the end of
 > this document). Route B landed — a no-state bridge lemma
 > (`Agar/Iris/CalleeBridge.lean`) closes the walkthrough example. Route
@@ -567,3 +630,360 @@ The pure-helper case becomes a degenerate instance: the helper has no state effe
 5. **What's the right shape of the helper-spec interface at the bridge?** For the pure case it was `(denote ρ = (some (), ρ_f), Expr.eval ρ_f e = some v)`. For the state-bearing case it's some triple/wp. We need a clean abstraction so the bridge doesn't have to know about Std.Do internals — analogous to how the current bridge consumes "any denote equation."
 
 Resolving these informs whether the Std.Do bridge is a small lift or a larger interpretive project.
+
+### 8.8 Update (2026-05-26): Route A walkthrough closed
+
+The previously-deferred Route A walkthrough
+(`rangeProd_composite_walkthrough_RouteA` in
+`Agar/Examples/SimpleRangeProdCompositionRouteA.lean`) is now closed.
+There was no fork-post mismatch with the adequacy entry-point: the
+`adequacy_with_heap_intro_P` macro does *not* pin `fork_post := emp` —
+it leaves an existential that the proof picks. Closing the walkthrough
+just required inlining the macro's body and choosing
+`fork_post := iprop(True : IProp GF)` throughout (at the `wp_safe_bupd`
+existential pick, at each `wp_fork` site, and at each `wp_call` site),
+so the value matches the `True` that `completeness_open` (and hence
+`wp_callee_routeA`) threads through the residual. The proof structure
+mirrors the closed `wp_callee_of_pure_helper` walkthrough one-to-one;
+the only structural difference is consuming `wp_callee_routeA`'s
+trailing fupd via `iapply fupd_wp` before the `refine .trans ?_
+(wp_callee_routeA …)` step. The standalone-SafeTp obligation
+(`helper_safeTp`) is discharged via `SafeTp_procs_irrel_of_strict`
+applied to `helperProg_safe`, so the only remaining sorrys in the
+RangeProd stack are the pre-existing carve-outs in
+`SimpleRangeProdHelperSafe.lean` and `SimpleRangeProdComposition.lean`.
+
+### 8.9 Update (2026-05-26): `rangeProd_spec` closed via direct induction
+
+The Std.Do "pretty endpoint" Hoare triple `rangeProd_spec` in
+`Agar/Examples/SimpleRangeProdHelperSafe.lean` is now closed without
+mvcgen. `denote (prodProg n)` is a plain pure `Env → Option Unit × Env`
+function — it does not live in do-notation, so mvcgen has no structural
+do/forIn machinery to engage with; even the `forN` is a custom
+`iter`-based recursor, not Std.Do's `forIn`. The Triple unfolds
+definitionally for `StateM`: after `intro ρ hpre`, the goal reduces
+(via `WP.wp` for `StateT` + `PostCond.noThrow`) to a pair of
+conjuncts about `(denote (prodProg n) ρ).fst` and `(denote …).snd "acc"`.
+Closing it is then a direct induction over the inner `forN`, with
+the invariant *"after k iterations starting from `acc = A, i = I`,
+we end with `acc = A · rangeProdValue I k` and `i = I + k`"*. The
+generalised helper `forN_prodBody_spec` (private to the file) handles
+the loop; `rangeProd_spec` instantiates it at `A = 1, I = a`. Roughly
+100 lines added. The broader Std.Do ↔ Agar adequacy bridge question
+of §8.5/§8.6 is unaffected by this — it remains future work; this
+update simply removes the in-file `sorry` so downstream consumers of
+`helperProg_safe` no longer rely on an unproven triple.
+
+### 8.10 Update (2026-05-26): Std.Do shape investigated — answers to §8.7 Q1–Q4
+
+Direct read of `Std.Do` source (Lean 4.29.0 toolchain) clarifies the
+shape of the bridge work in §8.5/§8.6.
+
+**Q1 (mvcgen output shape).** `Std.Do.Triple x P Q` is *definitionally*
+`P ⊢ₛ wp⟦x⟧ Q` (`Std/Do/Triple/Basic.lean:37`). `mvcgen` produces a
+sub-proof of that entailment; the result the bridge consumes is a
+Hoare-triple-wrapped wp at the user's monad's predicate transformer.
+The premise the bridge will accept is a `Triple x P Q` value (or
+equivalently, an `P ⊢ₛ wp⟦x⟧ Q`).
+
+**Q2 (Std.Do operational semantics).** **There isn't one.** Std.Do
+exposes a `WP` typeclass that interprets a monadic program `x : m α` as
+a predicate transformer `PredTrans ps α`, parameterised by the monad's
+`PostShape ps`. There is no step relation, no small-step semantics, and
+no "thread" abstraction. **This means the bridge cannot be step↔step.**
+It must be: "Std.Do `Triple x P Q` → Agar `Machine.SafeTp` of an
+embedded translation of `x`." The translation is operational on Agar's
+side; Std.Do contributes only the wp-flavoured spec.
+
+**Q3 (heap representation).** Std.Do is monad-agnostic. It has `WPMonad`
+instances for `Id`, `StateT σ m` (and hence `StateM σ`), `ReaderT`,
+`ExceptT`, `OptionT`, `EStateM`, `Except`, `Option`. The "heap" is
+whatever the user picks for `σ` in `StateM σ` (or for the appropriate
+shape in their preferred monad). For matching Agar, the natural choice
+is `StateM Mem` (or `StateM (Mem × Env)` if the helper-spec wants Env
+too). No `IORef` / `IO` runtime entanglement.
+
+**Q4 (translate to Agar `Stmt` vs. trust Std.Do directly).** Both are
+viable, with different trade-offs:
+
+* *Translate to `Stmt`*: the bridge becomes "if `denote_state s ρ σ`
+  agrees with `x.run σ`, then a Std.Do triple for `x` lifts to a SafeTp
+  witness for the embedded `Stmt` form of `s`." Requires defining a
+  state-aware `denote_state : PureStmt → Env → Mem → Option α × Env ×
+  Mem` (generalisation of the current pure `denote`) and an embedding
+  `stateEmbed : StateStmt → Stmt` analogous to today's `embed`. Single
+  operational model on Agar's side; clean.
+
+* *Trust Std.Do directly*: keep the helper expressed as `m : StateM Mem
+  α` (or whichever monad) and prove SafeTp of an abstract
+  "interpretation" operation against Std.Do's wp. Requires extending
+  Agar's `tstep` to recognise an "opaque atomic Std.Do block" as a
+  primitive — i.e., a new `Stmt.std_do` constructor or a per-thread
+  side-channel. More invasive; relaxes the "single operational model"
+  property.
+
+The first option is closer in spirit to the current `denote`/`embed`
+chain and reuses the strict-helper procs-irrelevance lift. Recommended
+default.
+
+**Q5 (helper-spec interface at the bridge).** With the above settled,
+the bridge premise becomes:
+
+```
+∀ ρ σ, P ρ σ →
+  ∃ ρ' σ' v_h,
+    denote_state pureBody ρ σ = (some (), ρ', σ') ∧
+    Expr.eval ρ' retExpr = some v_h ∧
+    Q v_h ρ' σ'
+```
+
+i.e., the pure-case's pair `(denote_eq, ret_eq)` plus a heap component.
+Derived from `Triple pureBody P Q` by unfolding the `StateM`'s `WP`
+instance (analogous to today's `Triple.iff_conseq` reduction).
+
+**Implication for the next coding milestone.** Two concrete pieces:
+
+1. **`denote_state`**: a state-aware variant of `Agar.Lang.Denotational.denote`,
+   operating on `Env × Mem`. Define for the same `PureStmt`
+   constructors, with `assign/load/store/free/cas/alloc` actually
+   touching the heap component. `forN/while_/repeat` unchanged
+   structurally. Adequacy: prove `denote_state s ρ σ = (some (), ρ', σ')`
+   implies `PureSteps_with_heap ⟨embed s, [], ρ, …⟩ ⟨.skip, [], ρ', …⟩`
+   at the operational level (state-aware analogue of `denote_sound`).
+
+2. **State-bearing CalleeBridge** (`wp_callee_of_state_helper`): mirror
+   `wp_callee_of_pure_helper`, with a state component in the premise
+   and a `state_interp` framing through the heap fragment. This is the
+   real Iris work; the operational lemmas in (1) are the supporting
+   chain.
+
+Both can wait on a concrete state-bearing example to motivate them
+(e.g., an accumulator-into-a-loc helper). For now, this update
+documents that the bridge shape is settled at the level of design.
+
+### 8.11 Update (2026-05-26): state-bearing example sketch
+
+To motivate the `denote_state` / `wp_callee_of_state_helper` design,
+sketch a minimal heap-touching helper. Goal: small enough to fit in
+one example file, large enough to exercise *all* the new bridge
+machinery without redundancy.
+
+**Candidate: `accInto`**
+
+```
+proc accInto(loc : Loc, n : Nat) :
+  let total : Loc = alloc 0
+  i := 1
+  while i ≤ n:
+    cur := load total
+    store total (cur + i)
+    i := i + 1
+  result := load total
+  free total
+  store loc result
+  return ()
+```
+
+Spec (Std.Do triple over `StateM Mem`):
+
+```
+⦃fun σ => ⌜σ.fn loc = some (.int _)⌝⦄
+  accInto_body loc n
+⦃⇓ _ => fun σ' => ⌜σ'.fn loc = some (.int (n·(n+1)/2)) ∧ σ'.dom = σ.dom⌝⦄
+```
+
+Why this shape:
+* **Local allocation + free** (`total`): tests that intermediate heap
+  resources can be created and disposed of inside the helper without
+  leaking back into the caller's frame.
+* **Read + write loop** (`load`/`store` in the body): tests the
+  `denote_state`'s heap component on the most common operations.
+* **Write to the caller's location** (`store loc result`): tests the
+  ownership-transfer interface — the helper must consume a points-to
+  fragment for `loc` and return it updated. This is what no pure helper
+  exercises, and what `state_interp` framing has to handle.
+* **No `cas`**: deliberate. `cas` adds atomicity machinery; once the
+  basic story works, a follow-up example can layer it in.
+* **`while_` with bounded fuel** rather than `forN`: matches `accInto`'s
+  natural form, plus exercises that the state-aware bridge handles
+  the same `while_` fuel discipline as the pure case.
+
+The composite for this example mirrors `rangeProdComposite3`:
+
+```
+proc accIntoCaller(): { l := alloc 0; accInto(l, 5); return load l }
+fork accIntoCaller; { l := alloc 0; accInto(l, 7); return load l }
+```
+
+Two concurrent calls into the helper, each on its own freshly-
+allocated location. No interference; tests that the bridge composes
+cleanly with multi-threading even though the helper itself touches
+only its own arguments.
+
+**Implication for `denote_state`'s signature**
+
+```
+abbrev StateDenot := StateM (Env × Mem) (Option Unit)
+
+def denote_state : StateStmt → StateDenot
+```
+
+where `StateStmt` extends `PureStmt` with `.load / .store / .free /
+.cas / .alloc` constructors (mirroring `Stmt`'s heap fragment minus
+`.call / .fork / .ret`). For `.alloc`, the location is supplied
+externally — either via an oracle parameter `(fresh : Nat → Loc)` or
+by carrying it in a reader component. The simplest is to thread a
+fresh-name supply through the denotation:
+
+```
+abbrev StateDenot := StateM (Env × Mem × FreshSupply) (Option Unit)
+```
+
+where `FreshSupply := Nat` and `.alloc` consumes `n` and returns
+`Loc.mk n` (or similar). The operational `.alloc` step then has to
+match the same fresh-name choice — this is where the bridge's
+existential-allocation story has to be threaded carefully.
+
+**Implication for `wp_callee_of_state_helper`**
+
+Premise needs *two* extra hypotheses beyond the pure bridge:
+1. `state_interp σ` consumption: the caller's heap fragment for the
+   argument locations must be threaded through. Concretely, the
+   bridge consumes `σ` and returns `σ'` via `state_interp σ` →
+   `state_interp σ'`.
+2. A Hoare-triple-style premise:
+   `Triple body P Q` where `P, Q : SPred (.arg (Env × Mem) .pure)`.
+
+The premise's `Q` predicate fires Φ at the post-state. The bridge
+discharges the operational SafeTp (now state-aware) via the same
+`SafeTp_procs_irrel_of_strict`-style lift, *modulo* the procs-irrel
+lift being generalised from `StrictHelperShape` to a state-aware
+variant that allows `.load / .store / etc.` It will likely call for a
+new predicate `StateHelperShape ⊃ StrictHelperShape` covering the
+heap-touching fragment.
+
+**Implementation order (suggested)**
+
+1. Define `StateStmt`, `denote_state`, prove `denote_state_sound`
+   (operational adequacy) — parallels `Agar/Lang/Denotational.lean`.
+2. Define `StateHelperShape` / `StateHelperThread`; prove procs-
+   irrelevance for it. This is mechanical (mirrors `StrictHelper.lean`,
+   adds heap-touching cases that are procs-independent anyway).
+3. Prove `accInto_body_safe` operationally (Agar `Machine.SafeTp`),
+   parametrised by an allocation oracle.
+4. Define `wp_callee_of_state_helper`; prove via the `wp_stack_push`
+   chain (which is heap-agnostic — state_interp threads through).
+5. Write the walkthrough as a sibling of
+   `SimpleRangeProdCompositionRouteA.lean`.
+6. Optionally: write the Std.Do triple `accInto_spec` with mvcgen;
+   discharge `accInto_body_safe` via the same `Triple.iff` unfolding
+   pattern used for `rangeProd_spec`.
+
+Estimated total scope: ~800–1200 LoC (`denote_state` + state-aware
+procs-irrel + bridge + example). Most of it is mechanical mirror of
+the pure-helper chain; the genuinely new work is the
+`state_interp`/points-to threading in `wp_callee_of_state_helper`.
+
+The pure-helper chain stands as the spine; state-bearing extends it
+along one axis (the heap component) without altering the other.
+
+### 8.12 Update (2026-05-26): `denote_state` + `embed_state` landed
+
+First concrete step from §8.11's implementation order. New file
+`Agar/Lang/DenotationalState.lean` (~165 LoC, no `sorry`s):
+
+* **`StateStmt`** — heap-touching extension of `PureStmt`: adds
+  `.load / .store / .free / .cas / .alloc` constructors (mirroring
+  `Stmt`'s heap fragment minus `.call / .fork / .ret`).
+* **`StatePack`** — bundle of `(env, mem, fresh : Nat)` threaded
+  through `denote_state`. The `fresh` counter is a deterministic
+  allocation supply; the bridge will pin operational `chosen : Loc`
+  to it.
+* **`denote_state : StateStmt → StateM StatePack (Option Unit)`** —
+  total denotation. Heap operations read/update `p.mem` via
+  `Mem.load / store / free / alloc`. `.alloc` bumps `p.fresh`.
+* **`iter_st / iterWhile_st`** — state-bearing analogues of
+  `iter / iterWhile`.
+* **`embed_state : StateStmt → Stmt`** — operational embedding,
+  mirroring `embed` and forwarding heap constructors directly to
+  `Stmt`'s heap fragment.
+* Simp lemmas for `skip / assign / forN_zero / forN_succ /
+  while_zero / while_succ`.
+
+Open follow-ups (next ticks):
+1. **`denote_state_sound`**: operational adequacy — convergent
+   `denote_state s p = (some (), p')` implies a `PureSteps_with_heap`
+   chain from `⟨embed_state s, [], p.env, [], none⟩` at memory
+   `p.mem` to `⟨.skip, [], p'.env, [], none⟩` at memory `p'.mem`,
+   with the `chosen : Loc` arguments along the chain matching the
+   `p.fresh`-supplied sequence. This is the state-aware analogue of
+   `Agar.denote_sound`.
+2. **`StateHelperShape`** + procs-irrelevance for the heap-touching
+   fragment. The case analysis on `tstep` is procs-independent on all
+   the heap operations (procs is only touched by `.call / .fork`), so
+   this should be a near-mechanical mirror of `StrictHelper.lean`.
+3. **`accInto`** definition + `wp_callee_of_state_helper`.
+
+This update covers the data-layer plumbing; the proof obligations
+above are the next concrete subgoals.
+
+### 8.13 Recipe: how to use Route A for a new pure helper
+
+The pipeline factors cleanly enough that adapting it to a fresh
+helper is a matter of plugging in a new spec at the top and threading
+the same chain through. The six concrete steps:
+
+1. **Write your helper as a `Proc`** whose body has the canonical shape
+   `.seq (embed pureBody) (.ret retExpr)`, with `pureBody : PureStmt`
+   built from the heap-free fragment (no `.load / .store / .cas / .alloc /
+   .free`) and `pureBody.whileFree` (no `.while_` — use `.forN` or
+   `.repeat` for bounded iteration). Models: `rangeProd` in
+   `SimpleRangeProdComposition.lean`.
+
+2. **State the `Std.Do.Triple`** for `denote pureBody` over `StateM Env`.
+   The `wp` instance for plain `StateM` reduces the `Triple` definitionally
+   to a pointwise `denote`-convergence + post statement (no `Triple.iff`
+   API needed; `intro ρ hpre; refine ⟨?_, ?_⟩` lands directly on the
+   reduction). Model: `rangeProd_spec` in `SimpleRangeProdHelperSafe.lean`.
+   For a loop you'll typically need a generalized invariant lemma proved
+   by induction on the iteration count (see `forN_prodBody_spec`).
+
+3. **Derive `helper_init_reaches_terminal`** — a `PureSteps` chain from
+   the parameter-bound init thread to `helperTerminal ρ_f v`. The
+   chain is built from one `.seq` pop, the `denote_sound` chain on
+   the body, one `.skip`-pop, and one `.ret`-with-empty-stack. Model:
+   `helper_init_reaches_terminal` in `SimpleRangeProdHelperSafe.lean`.
+   Generic: ~20 lines.
+
+4. **Prove `helperProg_safe`** by walking the `Machine.StepStarN`
+   trajectory through `machineStepStarN_helper` (singleton-pool
+   `HelperThread` folding) and `PureSteps.stuck_unique` at the
+   terminal. Model: `helperProg_safe`. Generic: ~30 lines.
+
+5. **Lift to `helper_safeTp` under the composite** with one application
+   of `SafeTp_procs_irrel_of_strict` to a `helper_init_strictHelperThread`
+   witness. Two lines. The strict-helper witness itself is `~6` lines
+   (constructor application using `embed_strictHelperShape` +
+   `prodProg.whileFree`).
+
+6. **Write the walkthrough** — `wp_safe_bupd` opener, pick
+   `fork_post := iprop(True : IProp GF)`, peel the composite's main
+   with `wp_seq`/`wp_fork`/`wp_call`, and at each `.call yourhelper`
+   site fire the three-line bridge:
+   ```
+   iapply fupd_wp
+   refine .trans ?_ (wp_callee_yourHelper …)
+   iintro _; iintro %v Hpv; icases Hpv with %hv; subst hv
+   iintro _; iapply wp_ret_top _ _ _ <closedForm> _ _ _ rfl
+   ipure_intro; trivial
+   ```
+   where `wp_callee_yourHelper` is a fresh specialization of
+   `wp_callee_routeA`'s shape (essentially: substitute your helper's
+   spec into the bridge's premise wand). Model: lines 209–238 of
+   `SimpleRangeProdCompositionRouteA.lean`.
+
+The Iris infrastructure pieces (`completeness_open`, `wp_stack_push`,
+`SafeTp_procs_irrel_of_strict`) are **fully reusable** — they're
+parametric in the program, thread, and predicate. The only per-helper
+work is steps 1–3 (the spec) and step 6 (the walkthrough's call-site
+boilerplate).

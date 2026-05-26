@@ -53,6 +53,12 @@
 --                       the helper from a purely denotational spec.
 --
 -- ## `Agar/Examples/` — end-to-end verifications
+--
+--   **Showcase entry point: `ExternalSolver`** — dispatches a pure
+--   helper's spec from `Std.Do.Triple` down to a closed `Machine.safe`
+--   for a composite program. See `HYPOTHESIS.md` §8 for the design
+--   and §8.13 for the recipe.
+--
 --   Each file uses the program logic to verify a Agar program.
 --   Sequential examples (Sanity, Recursion, Sequential, DataStructures)
 --   exercise the basic rules; concurrent ones (Fork, ParAdd, Invariant,
@@ -72,6 +78,7 @@ public import Agar.Lang.Syntax
 public import Agar.Lang.Semantics
 public import Agar.Lang.Notation
 public import Agar.Lang.Denotational
+public import Agar.Lang.DenotationalState
 
 -- Iris program-logic infrastructure: WP, heap interp + points-to,
 -- WP rules (incl. invariant atomic triples), spin-loop rules, tactic
@@ -93,9 +100,9 @@ public import Agar.Iris.Algebra.ThreadpoolRA
 public import Agar.Iris.Completeness
 public import Agar.Iris.PureHelperBridge
 public import Agar.Operational.StackExt
+public import Agar.Operational.StrictHelper
 public import Agar.Iris.StackPush
-public import Agar.Examples.SimpleRangeProdCompositionRouteA
-public import Agar.Examples.RangeProdStdDo
+public import Agar.Examples.ExternalSolver
 
 -- Example programs and their closed-adequacy proofs, plus the
 -- per-WP-rule sanity suite.

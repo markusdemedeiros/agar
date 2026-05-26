@@ -1209,11 +1209,35 @@ open Iris Iris.BI Iris.OFE Iris.COFE Iris.Std.LawfulSet
 variable {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
   [TpGpreS GF F] [AgarG GF F] [InvGS_gen false GF]
 
-/-- **Open-context Theorem 15.** Same operational premise as
-`completeness_general` (heap-free initial thread + ∀-σ SafeTp), but
-takes `[AgarG GF F]` and `[InvGS_gen false GF]` as already-in-scope
-typeclasses. Produces just a `wp` (no fresh `state_interp`), wrapped
-in an `fupd` to absorb the ghost allocations. -/
+/-- **Open-context Theorem 15: operational safety ⇒ Iris wp, without
+re-allocating the world.**
+
+This is the conceptual centerpiece of the Route A bridge. The original
+Theorem 15 (`completeness` / `completeness_modulo_lemma14`) is a
+*closed-world* statement: it manufactures a fresh `AgarG` instance and
+a fresh `state_interp`, then hands back a wp. That's fine for top-level
+adequacy ("here is an empty heap; here is what the program does"), but
+it cannot be invoked from *inside* an Iris proof — the freshly-allocated
+ghost state would never unify with the in-scope one.
+
+`completeness_open` is the call-site-friendly variant. It takes the
+ambient `[AgarG GF F]` and `[InvGS_gen false GF]` as given, allocates
+only the (call-private) threadpool ghost γ and the `Icompl_pure`
+invariant, and returns just a `|={⊤}=> wp …` — no `state_interp`
+manufactured, no `∃ Hsi` to discharge. Heap framing happens at the
+caller's level, using the existing in-scope `state_interp`.
+
+**Premise.** A heap-free program and a heap-free initial thread, plus
+the operational guarantee `∀ σ, Machine.SafeTp prog ⟨σ, [t_init]⟩ φ`
+(safety of the singleton thread pool from any initial heap). This is
+the same operational shape as `completeness_general`; the only
+difference is what the theorem allocates.
+
+**Output `fork_post`.** Hardcoded to `iprop(True : IProp GF)`. This is
+what the completeness construction naturally yields — `percomplete`'s
+fork-thread post is a trivial wp wrapped in `wp_wand`, which delivers
+the trivial post. Callers must pick `True` as their `fork_post` at
+matching `wp_fork` / `wp_call` sites to keep the unification clean. -/
 theorem completeness_open
     {prog : Program} {φ : Val → Prop} (hpf : prog.heapFree)
     (t_init : Thread) (htf_init : t_init.heapFree)

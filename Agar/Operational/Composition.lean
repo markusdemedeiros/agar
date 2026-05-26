@@ -1175,13 +1175,19 @@ theorem set_append_other (threads : List Thread) (i j : Nat)
     (t' : Thread) (sp : Option Thread)
     (hj_lt : j < threads.length) (hne : j ≠ i) :
     (threads.set i t' ++ sp.toList)[j]? = threads[j]? := by
-  sorry
+  have hj_set : j < (threads.set i t').length := by simp [hj_lt]
+  rw [List.getElem?_append_left hj_set]
+  rw [List.getElem?_set]
+  simp [hne.symm, hj_lt]
 
 /-- Set + append at index `i` returns the new thread. -/
 theorem set_append_at (threads : List Thread) (i : Nat) (t' : Thread)
     (sp : Option Thread) (hi_lt : i < threads.length) :
     (threads.set i t' ++ sp.toList)[i]? = some t' := by
-  sorry
+  have hi_set : i < (threads.set i t').length := by simp [hi_lt]
+  rw [List.getElem?_append_left hi_set]
+  rw [List.getElem?_set]
+  simp [hi_lt]
 
 /-- The spawned thread (when present) lands at index `threads.length`. -/
 theorem set_append_spawned (threads : List Thread) (i : Nat) (t' : Thread)
@@ -1193,6 +1199,8 @@ theorem set_append_spawned (threads : List Thread) (i : Nat) (t' : Thread)
   simp
 
 end SimStep
+
+set_option linter.deprecated false
 
 /-- **Simulation step.** Given `Sim μ_a μ_c` and a concrete step
 `μ_c → μ_c'`, the abstract takes 0 or 1 abstract steps to reach some
@@ -1211,7 +1219,21 @@ Four cases (per the structural-denotational design):
 * **InBody/.ret-pop**: concrete is at the near-end and `doReturn`
   fires, landing exactly at the abstract's post-call state (0
   abstract steps; transition back to Matching).
--/
+
+**RETIRED 2026-05-26.** This lemma underlies `Machine.safe_compose`, the
+legacy pure-operational composition route. The route has an unresolved
+structural mismatch between `Step_abstract.atomic_call`'s output shape
+(`⟨.skip, cont, ...⟩`) and `doReturn`'s actual output on non-empty
+`frame.cont` (`⟨head, tail, ...⟩`). The Iris/Route A pipeline
+(`wp_callee_routeA` + `completeness_open` + `wp_stack_push`) supersedes
+this route and is end-to-end closed for the pure-helper case. See
+`HYPOTHESIS.md` §8.6 (retirement rationale) and §8.5 (replacement path).
+This `sorry` is preserved as a marker; no further investment planned.
+
+Everything from `simulation_step` onward in this file is the legacy
+route; deprecated-linter suppression is scoped to the rest of the file
+via a `set_option linter.deprecated false` above the docstring. -/
+@[deprecated "Use the Iris/Route A pipeline (wp_callee_routeA). See HYPOTHESIS.md §8.6." (since := "2026-05-26")]
 theorem simulation_step
     (composite : Program) (h_pname : Name) (h : Proc)
     (h_registered : composite.procs h_pname = some h)
@@ -1857,7 +1879,12 @@ theorem sim_transfer
 /-- **The composition lemma.** Combines the helper's structural-
 denotational shape with the composite's abstract safety to deliver
 concrete `Machine.safe`. The "purity" premises (heapFree / forkFree /
-noCall) all follow from `h_body_eq`. -/
+noCall) all follow from `h_body_eq`.
+
+**RETIRED 2026-05-26.** Depends on `simulation_step` (unresolved
+`atomic_call`/`doReturn` shape mismatch). Superseded by the Iris/Route A
+pipeline (`wp_callee_routeA`). See HYPOTHESIS.md §8.6. -/
+@[deprecated "Use the Iris/Route A pipeline (wp_callee_routeA). See HYPOTHESIS.md §8.6." (since := "2026-05-26")]
 theorem Machine.safe_compose
     (composite : Program) (h_pname : Name) (h : Proc)
     (h_registered : composite.procs h_pname = some h)
