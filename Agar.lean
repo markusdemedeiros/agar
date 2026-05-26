@@ -92,6 +92,8 @@ public import Agar.Iris.Algebra.CounterRA
 public import Agar.Iris.Algebra.ThreadpoolRA
 public import Agar.Iris.Completeness
 public import Agar.Iris.PureHelperBridge
+public import Agar.Operational.StackExt
+public import Agar.Iris.StackPush
 
 -- Example programs and their closed-adequacy proofs, plus the
 -- per-WP-rule sanity suite.
