@@ -104,27 +104,121 @@ via `assignAllParams`, not relevant here since we use `programOfHelper`
 which starts from `Env.empty` and we have a per-`ρ₀` triple). -/
 abbrev helperProg (n : Nat) : Program := programOfHelper (rangeProdHelper n)
 
-/-- Safety of the standalone helper program, with the helper's body
-preloaded with `"a" ↦ Val.int a` via the `Std.Do` triple's universal
-quantifier over `ρ₀`. -/
+/-- `helper_init n a` is a `HelperThread`: the stmt is the helper's
+seq-of-embed-and-ret shape, and the cont/stack are empty. -/
+theorem helper_init_helperThread (n : Nat) (a : Int) :
+    HelperThread (helper_init n a) := by
+  refine ⟨?_, ?_, rfl⟩
+  · -- HelperShape ((rangeProd n).body)
+    change HelperShape (.seq (embed (prodProg n)) (.ret (.var "acc")))
+    exact .seq _ _ (embedShape_helperShape (embed_embedShape _)) (.ret _)
+  · intro s hmem; cases hmem
+
+/-- The full pure-step trajectory from `helper_init n a` to the
+terminated state at value `Val.int (rangeProdValue a n)`. -/
+theorem helper_init_reaches_terminal (n : Nat) (a : Int) :
+    PureSteps (helper_init n a)
+      (helperTerminal
+        ((denote (prodProg n) (env_with_a a)).2)
+        (Val.int (rangeProdValue a n))) := by
+  obtain ⟨ρ_f, hd, hv⟩ := rangeProd_denote_converges n a
+  have hρ_f : (denote (prodProg n) (env_with_a a)).2 = ρ_f := by rw [hd]
+  rw [hρ_f]
+  -- Step 1: seq pop on (rangeProd n).body = .seq (embed prodProg) (.ret _).
+  have hstep1 : pstep (helper_init n a) =
+      some ⟨embed (prodProg n), [.ret (.var "acc")],
+            bindParams ["a"] [Val.int a], [], none⟩ := by
+    show pstep ⟨.seq (embed (prodProg n)) (.ret (.var "acc")), [],
+                bindParams ["a"] [Val.int a], [], none⟩ = _
+    rfl
+  -- Step 2: body via denote_sound.
+  have hbody : PureSteps
+      ⟨embed (prodProg n), [.ret (.var "acc")],
+       bindParams ["a"] [Val.int a], [], none⟩
+      ⟨.skip, [.ret (.var "acc")], ρ_f, [], none⟩ := by
+    have := denote_sound (prodProg n) [.ret (.var "acc")]
+      (bindParams ["a"] [Val.int a]) ρ_f
+      (env_with_a_eq_bindParams a ▸ hd)
+    exact this
+  -- Step 3: skip pops the trailing `.ret`.
+  have hstep3 : pstep ⟨.skip, [.ret (.var "acc")], ρ_f, [], none⟩ =
+      some ⟨.ret (.var "acc"), [], ρ_f, [], none⟩ := rfl
+  -- Step 4: ret fires doReturn on the empty stack.
+  have hstep4 : pstep ⟨.ret (.var "acc"), [], ρ_f, [], none⟩ =
+      some (helperTerminal ρ_f (Val.int (rangeProdValue a n))) := by
+    show pstep ⟨.ret (.var "acc"), [], ρ_f, [], none⟩ = _
+    simp [pstep, tstep, hv, doReturn, helperTerminal]
+  exact .step hstep1 (hbody.trans (.step hstep3 (.single hstep4)))
+
+/-- Multi-step reachability on a singleton helper threadpool: induct
+on `Machine.StepStarN` using `machineStep_helper` to extract `pstep`s
+into a `PureSteps` chain. Generalised over the starting thread (the
+existing `machineStepStarN_helper` pins it to `Thread.initial h.main`
+with `Env.empty`). -/
+private theorem helperProg_stepStarN_chain (n : Nat) (a : Int) (σ : Mem) :
+    ∀ steps t₀ μ', HelperThread t₀ →
+      Machine.StepStarN (helperProg n) steps ⟨σ, [t₀]⟩ μ' →
+      ∃ t', μ' = ⟨σ, [t']⟩ ∧ PureSteps t₀ t' ∧ HelperThread t' := by
+  intro steps
+  induction steps with
+  | zero =>
+      intro t₀ μ' he htraj
+      cases htraj
+      exact ⟨t₀, rfl, .refl, he⟩
+  | succ k ih =>
+      intro t₀ μ' he htraj
+      cases htraj with
+      | step h1 h2 =>
+          have ⟨t', hμ_mid, hp, hHt'⟩ := machineStep_helper _ σ _ _ he h1
+          rw [hμ_mid] at h2
+          have ⟨t'', hμ_end, hps, hHt''⟩ := ih _ _ hHt' h2
+          exact ⟨t'', hμ_end, .step hp hps, hHt''⟩
+
+/-- Safety of the standalone helper program starting from the
+parameter-bound thread `helper_init n a`. -/
 theorem helperProg_safe (n : Nat) (a : Int) :
-    ∀ σ, Machine.safeFrom (helperProg n) σ
-        (fun v => v = .int (rangeProdValue a n)) := by
-  -- `safe_of_denoteHelper` wants `denoteHelper h Env.empty = some v ∧ φ v`.
-  -- But our `Std.Do` triple is for env_with_a a, not Env.empty.
-  -- The `_total` wrapper takes `∀ ρ₀, ∃ v, denoteHelper h ρ₀ = some v ∧ φ v`,
-  -- which we'd need to prove for arbitrary ρ₀ — but our spec only covers
-  -- env_with_a a (the precondition `ρ.lookup "a" = some (.int a)` fails
-  -- for ρ₀ = Env.empty).
-  --
-  -- The cleaner path: use a custom `safe_of_denoteHelper_at_env` that
-  -- starts from a specific ρ₀. The existing proof of
-  -- `safe_of_denoteHelper` uses `Env.empty` only because `Thread.initial`
-  -- has empty env. For our use we want a thread initialised at `env_with_a a`,
-  -- which is precisely what `helper_init n a` is.
-  --
-  -- For now: stub. Plumbing across this gap is the small follow-up.
-  sorry
+    ∀ σ, Machine.SafeTp (helperProg n) ⟨σ, [helper_init n a]⟩
+        (fun v => v = Val.int (rangeProdValue a n)) := by
+  intro σ steps μ' htraj k t htk
+  -- Convergence + reaching-terminal witness from the spec.
+  obtain ⟨ρ_f, hd, hv⟩ := rangeProd_denote_converges n a
+  have h_reach :=
+    helper_init_reaches_terminal n a
+  have hρ_f_eq : (denote (prodProg n) (env_with_a a)).2 = ρ_f := by rw [hd]
+  rw [hρ_f_eq] at h_reach
+  -- Multi-step trajectory pins μ' = ⟨σ, [t']⟩.
+  have ⟨t', hμ', hps, hHt'⟩ :=
+    helperProg_stepStarN_chain n a σ steps _ μ'
+      (helper_init_helperThread n a) htraj
+  -- Case on thread index k.
+  rcases k with _ | k
+  · -- k = 0.
+    rw [hμ'] at htk
+    simp at htk
+    subst htk
+    -- Case on pstep t'.
+    rcases hp : pstep t' with _ | tn
+    · -- t' is stuck: identify with helperTerminal by PureSteps.stuck_unique.
+      have hstuck_term :
+          pstuck (helperTerminal ρ_f (Val.int (rangeProdValue a n))) :=
+        helperTerminal_pstuck _ _
+      have hstuck_t' : pstuck t' := hp
+      have ht_eq : t' = helperTerminal ρ_f (Val.int (rangeProdValue a n)) :=
+        PureSteps.stuck_unique hps hstuck_t' h_reach hstuck_term
+      subst ht_eq
+      left
+      refine ⟨Val.int (rangeProdValue a n),
+              helperTerminal_toValue _ _, fun _ => rfl⟩
+    · -- t' is reducible.
+      right
+      rw [hμ']
+      refine ⟨σ, tn, none, none, ?_⟩
+      show tstep (helperProg n).procs none _ _ = _
+      show tstep noProcs none σ t' = _
+      exact tstep_helperShape_chosen_none hp σ
+  · -- k > 0: μ'.threads = [t'], so [t'][k+1]? = none, vacuous.
+    rw [hμ'] at htk
+    simp at htk
 
 /-! ## Bridge to `SafeTp` of the composite
 
@@ -150,8 +244,8 @@ procs doesn't shadow the embed placeholders*. The existing proofs
 `machineStepStarN_helper` all generalize. -/
 theorem SafeTp_of_safeFrom_helperProg (n : Nat) (a : Int)
     (h_no_shadow : rangeProdComposite3.procs "_no_proc_" = none)
-    (h_helper_safe : ∀ σ, Machine.safeFrom (helperProg n) σ
-        (fun v => v = .int (rangeProdValue a n))) :
+    (h_helper_safe : ∀ σ, Machine.SafeTp (helperProg n)
+        ⟨σ, [helper_init n a]⟩ (fun v => v = Val.int (rangeProdValue a n))) :
     ∀ σ, Machine.SafeTp rangeProdComposite3
         ⟨σ, [helper_init n a]⟩ (helper_post_at n a) := by
   -- Procs-irrelevance + initial-env adjustment.
