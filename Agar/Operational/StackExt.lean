@@ -5,37 +5,15 @@ public import Agar.Lang.Semantics
 
 @[expose] public section
 
-/-! # Stack-extension and `tstep` (Work-In-Progress)
+/-! # Stack-extension and `tstep`
 
-`stackExt t extra` appends `extra` at the bottom of `t.stack`.
+`stackExt t extra` appends `extra` at the bottom of `t.stack`. The
+key operational lemma `tstep_stackExt_preserve` says: every successful
+`tstep` on `t` that is **not** `.ret e` with empty `t.stack` lifts to
+a `tstep` on `stackExt t extra` whose post-state has `extra` appended.
 
-This module is the operational scaffold for the Iris-level
-`wp_stack_push` lemma. The intended top-level lemma is
-`tstep_stackExt_preserve` (stated but not yet proved):
-
-  Every successful `tstep` on `t` that is **not** `.ret e` with empty
-  `t.stack` lifts to a `tstep` on `stackExt t extra` with stack-extended
-  post-state.
-
-The exceptional `.ret`-empty case is the genuine divergence and is
-handled at the Iris level using the value disjunct.
-
-## Status
-
-The proof requires case analysis on `Stmt × chosen × cont/stack` with
-13 stmt arms. With the 2026-05-26 semantic refinement (implicit
-fallthrough uses `t.result.getD .unit` instead of `.unit`), the
-mathematical content is uniform — each case is mechanical — but Lean's
-`match` reduction over `cont` and `stack ++ extra` doesn't auto-simplify
-when one of those is a literal, requiring per-case manual rewriting.
-
-This file establishes:
-* `stackExt` and its simp lemmas (used throughout).
-* `tstep_stackExt_assign`: a single-stmt worked example showing the
-  idiom — `unfold tstep; split; cases; rfl`.
-
-The per-stmt lemma collection for the remaining 12 forms is left for a
-focused follow-up; structurally the same idiom works.
+The exceptional `.ret`-empty case is the divergence and is handled at
+the Iris level via the value disjunct.
 -/
 
 namespace Agar
@@ -56,16 +34,126 @@ def stackExt (t : Thread) (extra : List Frame) : Thread :=
 @[simp] theorem stackExt_result (t : Thread) (e : List Frame) :
     (stackExt t e).result = t.result := rfl
 
-/-- Worked-example per-stmt case: `.assign` preserves stack-extension. -/
-theorem tstep_stackExt_assign
-    (procs : Name → Option Proc) (m : Mem) (x : Name) (e : Expr)
-    (cont : List Stmt) (env : Env) (stack : List Frame) (result : Option Val)
-    (v : Val) (extra : List Frame)
-    (h : Expr.eval env e = some v) :
-    tstep procs none m (stackExt ⟨.assign x e, cont, env, stack, result⟩ extra)
-      = some (m, stackExt ⟨.skip, cont, env.set x v, stack, result⟩ extra, none) := by
-  unfold tstep stackExt
-  simp [h]
+theorem tstep_stackExt_preserve
+    (procs : Name → Option Proc) (chosen : Option Loc) (m : Mem)
+    (t : Thread) (extra : List Frame)
+    (m' : Mem) (t' : Thread) (sp : Option Thread)
+    (h_step : tstep procs chosen m t = some (m', t', sp))
+    (h_not_top_ret : ∀ e, t.stmt = .ret e → t.stack ≠ []) :
+    tstep procs chosen m (stackExt t extra)
+      = some (m', stackExt t' extra, sp) := by
+  obtain ⟨stmt, cont, env, stack, result⟩ := t
+  simp only [stackExt] at h_not_top_ret ⊢
+  match chosen, stmt with
+  -- chosen = some _ : only .alloc is reachable; rule out the rest
+  | some _, .skip       => simp [tstep] at h_step
+  | some _, .seq _ _    => simp [tstep] at h_step
+  | some _, .assign _ _ => simp [tstep] at h_step
+  | some _, .load _ _   => simp [tstep] at h_step
+  | some _, .store _ _  => simp [tstep] at h_step
+  | some _, .free _     => simp [tstep] at h_step
+  | some _, .cas _ _ _ _ => simp [tstep] at h_step
+  | some _, .ite _ _ _  => simp [tstep] at h_step
+  | some _, .whileDo _ _ => simp [tstep] at h_step
+  | some _, .call _ _ _ => simp [tstep] at h_step
+  | some _, .ret _      => simp [tstep] at h_step
+  | some _, .fork _ _   => simp [tstep] at h_step
+  | none, .alloc _ _    => simp [tstep] at h_step
+  -- alloc with chosen = some l
+  | some _, .alloc x e =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · cases h_step
+      · split at h_step
+        · cases h_step
+        · cases h_step; rfl
+  -- pure cases with no inner match
+  | none, .seq _ _ =>
+      simp only [tstep] at h_step ⊢; cases h_step; rfl
+  | none, .whileDo _ _ =>
+      simp only [tstep] at h_step ⊢; cases h_step; rfl
+  | none, .assign _ _ =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · cases h_step
+      · cases h_step; rfl
+  | none, .load _ _ =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · split at h_step
+        · cases h_step; rfl
+        · cases h_step
+      · cases h_step
+  | none, .store _ _ =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · split at h_step
+        · cases h_step; rfl
+        · cases h_step
+      · cases h_step
+  | none, .free _ =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · split at h_step
+        · cases h_step; rfl
+        · cases h_step
+      · cases h_step
+  | none, .cas _ _ _ _ =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · split at h_step
+        · cases h_step
+        · split at h_step
+          · split at h_step
+            · cases h_step; simp_all
+            · cases h_step
+          · cases h_step; simp_all
+      · cases h_step
+  | none, .ite _ _ _ =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · cases h_step; rfl
+      · cases h_step; rfl
+      · cases h_step
+  | none, .call x f args =>
+      simp only [tstep, callFrom] at h_step ⊢
+      split at h_step
+      · split at h_step
+        · cases h_step; simp_all
+        · cases h_step
+      · cases h_step
+  | none, .fork f args =>
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · split at h_step
+        · cases h_step; simp_all
+        · cases h_step
+      · cases h_step
+  | none, .ret e =>
+      have hstk : stack ≠ [] := h_not_top_ret e rfl
+      simp only [tstep] at h_step ⊢
+      split at h_step
+      · cases h_step
+      · simp only [doReturn] at h_step ⊢
+        match stack, hstk with
+        | f :: rest, _ =>
+            simp only [List.cons_append] at h_step ⊢
+            cases h_cont : f.cont with
+            | nil => simp only [h_cont] at h_step ⊢; cases h_step; rfl
+            | cons _ _ => simp only [h_cont] at h_step ⊢; cases h_step; rfl
+  | none, .skip =>
+      simp only [tstep] at h_step ⊢
+      match cont, stack with
+      | s :: rest, _ =>
+          cases h_step; rfl
+      | [], [] =>
+          cases h_step
+      | [], f :: rest =>
+          simp only [doReturn] at h_step ⊢
+          simp only [List.cons_append] at h_step ⊢
+          cases h_cont : f.cont with
+          | nil => simp only [h_cont] at h_step ⊢; cases h_step; rfl
+          | cons _ _ => simp only [h_cont] at h_step ⊢; cases h_step; rfl
 
 end BodyTraj
 end Agar
