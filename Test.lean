@@ -22,6 +22,7 @@ import Agar.Examples.Mutex
 import Agar.Examples.Spin
 import Agar.Iris.Library
 import Agar.Iris.Implements
+import Agar.Examples.ParChecksum
 
 
 /-! # Public-API smoke test
@@ -301,3 +302,11 @@ open Agar.Logic
 
 /-- info: 'Agar.Logic.gcd_6_4_via_spec_closed' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in #print axioms gcd_6_4_via_spec_closed
+
+-- Examples/ParChecksum.lean — fully-closed adequacy of the parallel checksum.
+
+/-- info: 'Agar.ParChecksum.Closed.parChecksum_closed_concrete' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms Agar.ParChecksum.Closed.parChecksum_closed_concrete
+
+/-- info: 'Agar.ParChecksum.Closed.parChecksum_returns_91_closed' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms Agar.ParChecksum.Closed.parChecksum_returns_91_closed

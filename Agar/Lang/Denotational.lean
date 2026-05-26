@@ -1,6 +1,7 @@
 module
 
 public import Agar.Lang.Semantics
+public import Agar.Lang.SimpAttr
 
 @[expose] public section
 
@@ -78,6 +79,44 @@ theorem denote_forN_succ (n : Nat) (s : PureStmt) (ρ : Env) :
   show iter (denote s) (n+1) ρ = _
   simp only [denote, iter]
 
+/-! ### `denote_norm` simp set
+
+These lemmas rewrite `denote (constructor …) ρ` into its plain
+match-on-result form, suitable for `simp only [denote_norm, …]` to
+walk an entire `PureStmt` tree without leaving stray `denote` calls.
+
+Use case: bridging `denote prog` to a hand-written `StateM Env (Option
+Unit)` monadic mirror, where the mirror exposes the same match
+structure for `mvcgen`. -/
+
+attribute [denote_norm] denote_skip denote_forN_zero
+
+@[denote_norm] theorem denote_assign_eq (x : Name) (e : Expr) (ρ : Env) :
+    denote (.assign x e) ρ =
+      (match Expr.eval ρ e with
+       | none   => (none, ρ)
+       | some v => (some (), ρ.set x v)) := rfl
+
+@[denote_norm] theorem denote_seq_eq (s₁ s₂ : PureStmt) (ρ : Env) :
+    denote (.seq s₁ s₂) ρ =
+      (match denote s₁ ρ with
+       | (none, ρ')   => (none, ρ')
+       | (some _, ρ') => denote s₂ ρ') := rfl
+
+@[denote_norm] theorem denote_ite_eq (e : Expr) (s₁ s₂ : PureStmt) (ρ : Env) :
+    denote (.ite e s₁ s₂) ρ =
+      (match Expr.eval ρ e with
+       | some (.bool true)  => denote s₁ ρ
+       | some (.bool false) => denote s₂ ρ
+       | _                  => (none, ρ)) := rfl
+
+@[denote_norm] theorem denote_forN_succ_eq (n : Nat) (s : PureStmt) (ρ : Env) :
+    denote (.forN (n+1) s) ρ =
+      (match denote s ρ with
+       | (none, ρ')   => (none, ρ')
+       | (some _, ρ') => denote (.forN n s) ρ') := by
+  rw [denote_forN_succ]; rfl
+
 @[simp] theorem denote_while_zero (g : Expr) (s : PureStmt) (ρ : Env) :
     denote (.while_ 0 g s) ρ = (none, ρ) := rfl
 
@@ -103,6 +142,142 @@ example :
                  (.assign "y" (.var "x"))) Env.empty
       = (some (), (Env.empty.set "x" (.int 5)).set "y" (.int 5)) := by
   rfl
+
+/-! ## Monadic denotation (`mvcgen`-friendly twin)
+
+`denoteM` is a `do`-block re-presentation of `denote`. It exists so that
+specs about pure programs can be stated against a shape `mvcgen` can
+walk — `denote` itself uses explicit pattern matching, which `mvcgen`
+cannot traverse.
+
+The bridge between the two, and the rest of the operational/triple
+plumbing, is built incrementally in follow-up commits. -/
+
+/-- `n`-fold execution of `body` over the placeholder list `List.replicate n ()`.
+Using `forIn` (rather than direct recursion) lets `Std.Do`'s `Spec.forIn_list`
+fire under `mvcgen`. Equivalent to the recursive form via `iterM_succ`. -/
+def iterM (body : StateM Env (Option Unit)) (n : Nat) :
+    StateM Env (Option Unit) :=
+  forIn (List.replicate n ()) (some ()) (fun _ acc =>
+    match acc with
+    | none   => pure (.done none)
+    | some _ => do
+        match ← body with
+        | none   => pure (.done none)
+        | some _ => pure (.yield (some ())))
+
+def iterWhileM (g : Env → Option Val) (body : StateM Env (Option Unit)) :
+    Nat → StateM Env (Option Unit)
+  | 0     => pure none
+  | n + 1 => do
+      let ρ ← get
+      match g ρ with
+      | some (.bool true) => do
+          match ← body with
+          | none   => pure none
+          | some _ => iterWhileM g body n
+      | some (.bool false) => pure (some ())
+      | _ => pure none
+
+def denoteM : PureStmt → StateM Env (Option Unit)
+  | .skip          => pure (some ())
+  | .assign x e    => do
+      let ρ ← get
+      match Expr.eval ρ e with
+      | none   => pure none
+      | some v => do set (ρ.set x v); pure (some ())
+  | .seq s₁ s₂     => do
+      match ← denoteM s₁ with
+      | none   => pure none
+      | some _ => denoteM s₂
+  | .ite e s₁ s₂   => do
+      let ρ ← get
+      match Expr.eval ρ e with
+      | some (.bool true)  => denoteM s₁
+      | some (.bool false) => denoteM s₂
+      | _                  => pure none
+  | .repeat n s    => iterM (denoteM s) n
+  | .forN n s      => iterM (denoteM s) n
+  | .while_ n g s  => iterWhileM (fun ρ => Expr.eval ρ g) (denoteM s) n
+
+/-! ### `denoteM_norm` simp set
+
+Monadic analogues of the `denote_norm` lemmas. Each rewrites
+`denoteM (constructor …)` into its `do`-block / bind form, exposing the
+shape `mvcgen` walks. -/
+
+@[simp, denoteM_norm] theorem denoteM_skip :
+    denoteM .skip = pure (some ()) := rfl
+
+@[simp, denoteM_norm] theorem denoteM_assign (x : Name) (e : Expr) :
+    denoteM (.assign x e) =
+      (do
+        let ρ ← get
+        match Expr.eval ρ e with
+        | none   => pure none
+        | some v => do set (ρ.set x v); pure (some ())) := rfl
+
+@[simp, denoteM_norm] theorem denoteM_seq (s₁ s₂ : PureStmt) :
+    denoteM (.seq s₁ s₂) =
+      (do
+        match ← denoteM s₁ with
+        | none   => pure none
+        | some _ => denoteM s₂) := rfl
+
+@[simp, denoteM_norm] theorem denoteM_ite (e : Expr) (s₁ s₂ : PureStmt) :
+    denoteM (.ite e s₁ s₂) =
+      (do
+        let ρ ← get
+        match Expr.eval ρ e with
+        | some (.bool true)  => denoteM s₁
+        | some (.bool false) => denoteM s₂
+        | _                  => pure none) := rfl
+
+@[simp, denoteM_norm] theorem denoteM_repeat (n : Nat) (s : PureStmt) :
+    denoteM (.repeat n s) = iterM (denoteM s) n := rfl
+
+@[simp, denoteM_norm] theorem denoteM_forN (n : Nat) (s : PureStmt) :
+    denoteM (.forN n s) = iterM (denoteM s) n := rfl
+
+@[simp, denoteM_norm] theorem denoteM_while (n : Nat) (g : Expr) (s : PureStmt) :
+    denoteM (.while_ n g s) =
+      iterWhileM (fun ρ => Expr.eval ρ g) (denoteM s) n := rfl
+
+@[simp, denoteM_norm] theorem iterM_zero (body : StateM Env (Option Unit)) :
+    iterM body 0 = pure (some ()) := by
+  show forIn (List.replicate 0 ()) (some ()) _ = _
+  simp [List.replicate]
+
+@[denoteM_norm] theorem iterM_succ (body : StateM Env (Option Unit)) (n : Nat) :
+    iterM body (n+1) =
+      (do
+        match ← body with
+        | none   => pure none
+        | some _ => iterM body n) := by
+  show iterM body (n+1) = _
+  unfold iterM
+  rw [List.replicate_succ, List.forIn_cons]
+  funext ρ
+  simp only [bind, StateT.bind, pure, StateT.pure]
+  cases body ρ with
+  | mk o ρ' => cases o <;> rfl
+
+@[simp, denoteM_norm] theorem iterWhileM_zero
+    (g : Env → Option Val) (body : StateM Env (Option Unit)) :
+    iterWhileM g body 0 = pure none := rfl
+
+@[denoteM_norm] theorem iterWhileM_succ
+    (g : Env → Option Val) (body : StateM Env (Option Unit)) (n : Nat) :
+    iterWhileM g body (n+1) =
+      (do
+        let ρ ← get
+        match g ρ with
+        | some (.bool true) => do
+            match ← body with
+            | none   => pure none
+            | some _ => iterWhileM g body n
+        | some (.bool false) => pure (some ())
+        | _ => pure none) := rfl
 
 /-! ## Embedding into `Stmt` -/
 
@@ -501,12 +676,193 @@ theorem denote_initial_sound (s : PureStmt) (ρ ρ' : Env)
     PureSteps (mkT (embed s) [] ρ) (mkT .skip [] ρ') :=
   denote_sound s [] ρ ρ' h
 
+/-! ## Soundness for `denoteM`
+
+`denoteM_sound` is the monadic analogue of `denote_sound`: a successful
+`denoteM` outcome drives the embedded operational thread to `.skip` at
+the same final environment. Proof mirrors `denote_sound` constructor by
+constructor; the `denoteM`-side reduction uses a small bag of
+`StateT`-internal unfolders (`bind`, `StateT.bind`, `StateT.get`,
+`StateT.set`, `StateT.pure`) to bring each case into pair form. -/
+
+theorem denoteM_sound (s : PureStmt) :
+    ∀ (cs : List Stmt) (ρ ρ' : Env),
+      denoteM s ρ = (some (), ρ') →
+      PureSteps (mkT (embed s) cs ρ) (mkT .skip cs ρ') := by
+  induction s with
+  | skip =>
+      intro cs ρ ρ' h
+      simp [denoteM] at h
+      obtain ⟨_, rfl⟩ := h
+      exact .refl
+  | assign x e =>
+      intro cs ρ ρ' h
+      simp only [denoteM, bind, StateT.bind, get, getThe, MonadStateOf.get,
+                 StateT.get, StateT.set, set, MonadStateOf.set,
+                 pure, StateT.pure] at h
+      rcases hev : Expr.eval ρ e with _ | v
+      · rw [hev] at h; cases h
+      · rw [hev] at h; cases h
+        exact .single (by simp [embed, hev])
+  | seq s₁ s₂ ih₁ ih₂ =>
+      intro cs ρ ρ' h
+      simp only [denoteM, bind, StateT.bind] at h
+      rcases h₁ : denoteM s₁ ρ with ⟨o₁, ρ₁⟩
+      rw [h₁] at h
+      cases o₁ with
+      | none => simp [pure, StateT.pure] at h; cases h
+      | some =>
+          simp only at h
+          have step₁ : pstep (mkT (.seq (embed s₁) (embed s₂)) cs ρ)
+              = some (mkT (embed s₁) (embed s₂ :: cs) ρ) := by simp
+          refine .step step₁ ?_
+          have hs₁ := ih₁ (embed s₂ :: cs) ρ ρ₁ h₁
+          have hpop : pstep (mkT .skip (embed s₂ :: cs) ρ₁)
+              = some (mkT (embed s₂) cs ρ₁) := by simp
+          refine hs₁.trans (.step hpop ?_)
+          exact ih₂ cs ρ₁ ρ' h
+  | ite e s₁ s₂ ih₁ ih₂ =>
+      intro cs ρ ρ' h
+      simp only [denoteM, bind, StateT.bind, get, getThe, MonadStateOf.get,
+                 StateT.get, pure, StateT.pure] at h
+      rcases hev : Expr.eval ρ e with _ | v
+      · rw [hev] at h; cases h
+      · rw [hev] at h
+        cases v with
+        | bool b =>
+            cases b with
+            | true =>
+                have step₁ : pstep (mkT (.ite e (embed s₁) (embed s₂)) cs ρ)
+                    = some (mkT (embed s₁) cs ρ) := by simp [hev]
+                exact .step step₁ (ih₁ cs ρ ρ' h)
+            | false =>
+                have step₁ : pstep (mkT (.ite e (embed s₁) (embed s₂)) cs ρ)
+                    = some (mkT (embed s₂) cs ρ) := by simp [hev]
+                exact .step step₁ (ih₂ cs ρ ρ' h)
+        | _ => cases h
+  | «repeat» n s ih =>
+      show ∀ cs ρ ρ', iterM (denoteM s) n ρ = (some (), ρ') →
+        PureSteps (mkT (unroll (embed s) n) cs ρ) (mkT .skip cs ρ')
+      induction n with
+      | zero =>
+          intro cs ρ ρ' h
+          simp [iterM_zero, pure, StateT.pure] at h
+          obtain ⟨_, rfl⟩ := h
+          exact .refl
+      | succ k ihk =>
+          intro cs ρ ρ' h
+          show PureSteps (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ) _
+          rw [iterM_succ] at h
+          simp only [bind, StateT.bind] at h
+          rcases h₁ : denoteM s ρ with ⟨o₁, ρ₁⟩
+          rw [h₁] at h
+          cases o₁ with
+          | none => simp [pure, StateT.pure] at h; cases h
+          | some =>
+              simp only at h
+              have step₁ : pstep (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ)
+                  = some (mkT (embed s) (unroll (embed s) k :: cs) ρ) := by simp
+              refine .step step₁ ?_
+              have hs₁ := ih (unroll (embed s) k :: cs) ρ ρ₁ h₁
+              have hpop : pstep (mkT .skip (unroll (embed s) k :: cs) ρ₁)
+                  = some (mkT (unroll (embed s) k) cs ρ₁) := by simp
+              refine hs₁.trans (.step hpop ?_)
+              exact ihk cs ρ₁ ρ' h
+  | forN n s ih =>
+      show ∀ cs ρ ρ', iterM (denoteM s) n ρ = (some (), ρ') →
+        PureSteps (mkT (unroll (embed s) n) cs ρ) (mkT .skip cs ρ')
+      induction n with
+      | zero =>
+          intro cs ρ ρ' h
+          simp [iterM_zero, pure, StateT.pure] at h
+          obtain ⟨_, rfl⟩ := h
+          exact .refl
+      | succ k ihk =>
+          intro cs ρ ρ' h
+          show PureSteps (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ) _
+          rw [iterM_succ] at h
+          simp only [bind, StateT.bind] at h
+          rcases h₁ : denoteM s ρ with ⟨o₁, ρ₁⟩
+          rw [h₁] at h
+          cases o₁ with
+          | none => simp [pure, StateT.pure] at h; cases h
+          | some =>
+              simp only at h
+              have step₁ : pstep (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ)
+                  = some (mkT (embed s) (unroll (embed s) k :: cs) ρ) := by simp
+              refine .step step₁ ?_
+              have hs₁ := ih (unroll (embed s) k :: cs) ρ ρ₁ h₁
+              have hpop : pstep (mkT .skip (unroll (embed s) k :: cs) ρ₁)
+                  = some (mkT (unroll (embed s) k) cs ρ₁) := by simp
+              refine hs₁.trans (.step hpop ?_)
+              exact ihk cs ρ₁ ρ' h
+  | while_ n g s ih =>
+      show ∀ cs ρ ρ', iterWhileM (fun ρ => Expr.eval ρ g) (denoteM s) n ρ = (some (), ρ') →
+        PureSteps (mkT (unrollW g (embed s) n) cs ρ) (mkT .skip cs ρ')
+      induction n with
+      | zero =>
+          intro cs ρ ρ' h
+          simp [iterWhileM_zero, pure, StateT.pure] at h
+          cases h
+      | succ k ihk =>
+          intro cs ρ ρ' h
+          show PureSteps (mkT (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ) _
+          rw [iterWhileM_succ] at h
+          simp only [bind, StateT.bind, get, getThe, MonadStateOf.get,
+                     StateT.get, pure, StateT.pure] at h
+          rcases hev : Expr.eval ρ g with _ | v
+          · rw [hev] at h; cases h
+          · rw [hev] at h
+            cases v with
+            | bool b =>
+                cases b with
+                | true =>
+                    simp only [bind, StateT.bind] at h
+                    rcases h₁ : denoteM s ρ with ⟨o₁, ρ₁⟩
+                    rw [h₁] at h
+                    cases o₁ with
+                    | none => simp [pure, StateT.pure] at h; cases h
+                    | some =>
+                        simp only at h
+                        have stepIte : pstep (mkT (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ)
+                            = some (mkT (.seq (embed s) (unrollW g (embed s) k)) cs ρ) := by
+                          simp [hev]
+                        refine .step stepIte ?_
+                        have stepSeq : pstep (mkT (.seq (embed s) (unrollW g (embed s) k)) cs ρ)
+                            = some (mkT (embed s) (unrollW g (embed s) k :: cs) ρ) := by simp
+                        refine .step stepSeq ?_
+                        have hs₁ := ih (unrollW g (embed s) k :: cs) ρ ρ₁ h₁
+                        have hpop : pstep (mkT .skip (unrollW g (embed s) k :: cs) ρ₁)
+                            = some (mkT (unrollW g (embed s) k) cs ρ₁) := by simp
+                        refine hs₁.trans (.step hpop ?_)
+                        exact ihk cs ρ₁ ρ' h
+                | false =>
+                    have hρ : ρ = ρ' := by
+                      have := congrArg Prod.snd h; simpa using this
+                    subst hρ
+                    have stepIte : pstep (mkT (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ)
+                        = some (mkT .skip cs ρ) := by simp [hev]
+                    exact .step stepIte .refl
+            | _ => cases h
+
 /-- Worked example: `repeat 3 (x := x + 1)` starting from `x = 0` ends with `x = 3`. -/
 example :
     let r := denote (.repeat 3 (.assign "x" (.bin .add (.var "x") (.val (.int 1)))))
                    (Env.empty.set "x" (.int 0))
     r.1 = some () ∧ r.2 "x" = some (.int 3) := by
   refine ⟨rfl, rfl⟩
+
+/-- Monadic analogue of `denote_initial_sound`. -/
+theorem denoteM_initial_sound (s : PureStmt) (ρ ρ' : Env)
+    (h : denoteM s ρ = (some (), ρ')) :
+    PureSteps (mkT (embed s) [] ρ) (mkT .skip [] ρ') :=
+  denoteM_sound s [] ρ ρ' h
+
+/-- Monadic analogue of `denote_some_pure_steps`. -/
+theorem denoteM_some_pure_steps (s : PureStmt) (cs : List Stmt) (ρ ρ' : Env)
+    (h : denoteM s ρ = (some (), ρ')) :
+    PureSteps (mkT (embed s) cs ρ) (mkT .skip cs ρ') :=
+  denoteM_sound s cs ρ ρ' h
 
 /-! ## Bridge to the multi-thread machine. -/
 
@@ -895,6 +1251,215 @@ theorem denote_complete (s : PureStmt) (ρ ρ' : Env)
   · -- some () case
     cases u
     have hps_fwd := denote_some_pure_steps s [] ρ ρ_d hr
+    have htermA : pstuck (mkT .skip [] ρ_d) := by simp [pstuck, pstep_skip_empty]
+    have heq := PureSteps.stuck_unique hps_fwd htermA hps htermB
+    have hρ : ρ_d = ρ' := by
+      have := congrArg Thread.env heq
+      simpa [mkT] using this
+    subst hρ; rfl
+
+/-! ## Reverse direction for `denoteM` -/
+
+/-- Monadic analogue of `denote_none_stuck`. -/
+theorem denoteM_none_stuck (s : PureStmt) :
+    ∀ (cs : List Stmt) (ρ : Env) (r : Env),
+      denoteM s ρ = (none, r) →
+      ∃ t_stuck, PureSteps (mkT (embed s) cs ρ) t_stuck ∧ pstuck t_stuck ∧
+        t_stuck.stmt ≠ .skip := by
+  induction s with
+  | skip =>
+      intro cs ρ r h
+      simp [denoteM, pure, StateT.pure] at h
+      cases h
+  | assign x e =>
+      intro cs ρ r h
+      simp only [denoteM, bind, StateT.bind, get, getThe, MonadStateOf.get,
+                 StateT.get, StateT.set, set, MonadStateOf.set,
+                 pure, StateT.pure] at h
+      rcases hev : Expr.eval ρ e with _ | v
+      · refine ⟨mkT (.assign x e) cs ρ, .refl, ?_, ?_⟩
+        · simp [pstuck, pstep, tstep, mkT, hev]
+        · simp [mkT]
+      · rw [hev] at h; cases h
+  | seq s₁ s₂ ih₁ ih₂ =>
+      intro cs ρ r h
+      simp only [denoteM, bind, StateT.bind] at h
+      generalize hde : denoteM s₁ ρ = res at h
+      rcases res with ⟨o₁, ρ₁⟩
+      have step₁ : pstep (mkT (.seq (embed s₁) (embed s₂)) cs ρ)
+          = some (mkT (embed s₁) (embed s₂ :: cs) ρ) := by simp
+      cases o₁ with
+      | none =>
+          simp [pure, StateT.pure] at h
+          cases h
+          obtain ⟨t_stk, hst, hsk, hne⟩ := ih₁ (embed s₂ :: cs) ρ r hde
+          exact ⟨t_stk, .step step₁ hst, hsk, hne⟩
+      | some =>
+          simp only at h
+          obtain ⟨t_stk, hst, hsk, hne⟩ := ih₂ cs ρ₁ r h
+          have h_to_skip := denoteM_some_pure_steps s₁ (embed s₂ :: cs) ρ ρ₁ hde
+          have hpop : pstep (mkT .skip (embed s₂ :: cs) ρ₁)
+              = some (mkT (embed s₂) cs ρ₁) := by simp
+          exact ⟨t_stk, .step step₁ (h_to_skip.trans (.step hpop hst)), hsk, hne⟩
+  | ite e s₁ s₂ ih₁ ih₂ =>
+      intro cs ρ r h
+      simp only [denoteM, bind, StateT.bind, get, getThe, MonadStateOf.get,
+                 StateT.get, pure, StateT.pure] at h
+      rcases hev : Expr.eval ρ e with _ | v
+      · rw [hev] at h
+        refine ⟨mkT (.ite e (embed s₁) (embed s₂)) cs ρ, .refl, ?_, ?_⟩
+        · simp [pstuck, mkT_ite_step, hev]
+        · simp [mkT]
+      · rw [hev] at h
+        cases v with
+        | bool b =>
+            cases b with
+            | true =>
+                obtain ⟨t_stk, hst, hsk, hne⟩ := ih₁ cs ρ r h
+                have step₁ : pstep (mkT (.ite e (embed s₁) (embed s₂)) cs ρ)
+                    = some (mkT (embed s₁) cs ρ) := by simp [hev]
+                exact ⟨t_stk, .step step₁ hst, hsk, hne⟩
+            | false =>
+                obtain ⟨t_stk, hst, hsk, hne⟩ := ih₂ cs ρ r h
+                have step₁ : pstep (mkT (.ite e (embed s₁) (embed s₂)) cs ρ)
+                    = some (mkT (embed s₂) cs ρ) := by simp [hev]
+                exact ⟨t_stk, .step step₁ hst, hsk, hne⟩
+        | _ =>
+            refine ⟨mkT (.ite e (embed s₁) (embed s₂)) cs ρ, .refl, ?_, ?_⟩
+            · simp [pstuck, mkT_ite_step, hev]
+            · simp [mkT]
+  | «repeat» n s ih =>
+      show ∀ cs ρ r, iterM (denoteM s) n ρ = (none, r) →
+        ∃ t_stuck, PureSteps (mkT (unroll (embed s) n) cs ρ) t_stuck ∧
+          pstuck t_stuck ∧ t_stuck.stmt ≠ .skip
+      induction n with
+      | zero =>
+          intro cs ρ r h; simp [iterM_zero, pure, StateT.pure] at h
+          cases h
+      | succ k ihk =>
+          intro cs ρ r h
+          show ∃ t_stuck, PureSteps (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ) t_stuck ∧
+            pstuck t_stuck ∧ t_stuck.stmt ≠ .skip
+          rw [iterM_succ] at h
+          simp only [bind, StateT.bind] at h
+          generalize hde : denoteM s ρ = res at h
+          rcases res with ⟨o₁, ρ₁⟩
+          have step₁ : pstep (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ)
+              = some (mkT (embed s) (unroll (embed s) k :: cs) ρ) := by simp
+          cases o₁ with
+          | none =>
+              simp [pure, StateT.pure] at h
+              cases h
+              obtain ⟨t_stk, hst, hsk, hne⟩ := ih (unroll (embed s) k :: cs) ρ r hde
+              exact ⟨t_stk, .step step₁ hst, hsk, hne⟩
+          | some =>
+              simp only at h
+              obtain ⟨t_stk, hst, hsk, hne⟩ := ihk cs ρ₁ r h
+              have h_to_skip := denoteM_some_pure_steps s (unroll (embed s) k :: cs) ρ ρ₁ hde
+              have hpop : pstep (mkT .skip (unroll (embed s) k :: cs) ρ₁)
+                  = some (mkT (unroll (embed s) k) cs ρ₁) := by simp
+              exact ⟨t_stk, .step step₁ (h_to_skip.trans (.step hpop hst)), hsk, hne⟩
+  | forN n s ih =>
+      show ∀ cs ρ r, iterM (denoteM s) n ρ = (none, r) →
+        ∃ t_stuck, PureSteps (mkT (unroll (embed s) n) cs ρ) t_stuck ∧
+          pstuck t_stuck ∧ t_stuck.stmt ≠ .skip
+      induction n with
+      | zero =>
+          intro cs ρ r h; simp [iterM_zero, pure, StateT.pure] at h
+          cases h
+      | succ k ihk =>
+          intro cs ρ r h
+          show ∃ t_stuck, PureSteps (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ) t_stuck ∧
+            pstuck t_stuck ∧ t_stuck.stmt ≠ .skip
+          rw [iterM_succ] at h
+          simp only [bind, StateT.bind] at h
+          generalize hde : denoteM s ρ = res at h
+          rcases res with ⟨o₁, ρ₁⟩
+          have step₁ : pstep (mkT (.seq (embed s) (unroll (embed s) k)) cs ρ)
+              = some (mkT (embed s) (unroll (embed s) k :: cs) ρ) := by simp
+          cases o₁ with
+          | none =>
+              simp [pure, StateT.pure] at h
+              cases h
+              obtain ⟨t_stk, hst, hsk, hne⟩ := ih (unroll (embed s) k :: cs) ρ r hde
+              exact ⟨t_stk, .step step₁ hst, hsk, hne⟩
+          | some =>
+              simp only at h
+              obtain ⟨t_stk, hst, hsk, hne⟩ := ihk cs ρ₁ r h
+              have h_to_skip := denoteM_some_pure_steps s (unroll (embed s) k :: cs) ρ ρ₁ hde
+              have hpop : pstep (mkT .skip (unroll (embed s) k :: cs) ρ₁)
+                  = some (mkT (unroll (embed s) k) cs ρ₁) := by simp
+              exact ⟨t_stk, .step step₁ (h_to_skip.trans (.step hpop hst)), hsk, hne⟩
+  | while_ n g s ih =>
+      show ∀ cs ρ r, iterWhileM (fun ρ => Expr.eval ρ g) (denoteM s) n ρ = (none, r) →
+        ∃ t_stuck, PureSteps (mkT (unrollW g (embed s) n) cs ρ) t_stuck ∧
+          pstuck t_stuck ∧ t_stuck.stmt ≠ .skip
+      induction n with
+      | zero =>
+          intro cs ρ r _h
+          refine ⟨mkT (.call "_no_var_" "_no_proc_" []) cs ρ, .refl, ?_, ?_⟩
+          · simp [pstuck, pstep, tstep, callFrom, noProcs, mkT]
+          · simp [mkT]
+      | succ k ihk =>
+          intro cs ρ r h
+          show ∃ t_stuck,
+            PureSteps (mkT (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ) t_stuck
+              ∧ pstuck t_stuck ∧ t_stuck.stmt ≠ .skip
+          rw [iterWhileM_succ] at h
+          simp only [bind, StateT.bind, get, getThe, MonadStateOf.get,
+                     StateT.get, pure, StateT.pure] at h
+          rcases hev : Expr.eval ρ g with _ | v
+          · rw [hev] at h
+            refine ⟨mkT (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ, .refl, ?_, ?_⟩
+            · simp [pstuck, mkT_ite_step, hev]
+            · simp [mkT]
+          · rw [hev] at h
+            cases v with
+            | bool b =>
+                cases b with
+                | true =>
+                    simp only [bind, StateT.bind] at h
+                    generalize hde : denoteM s ρ = res at h
+                    rcases res with ⟨o₁, ρ₁⟩
+                    have stepIte : pstep (mkT (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ)
+                        = some (mkT (.seq (embed s) (unrollW g (embed s) k)) cs ρ) := by simp [hev]
+                    have stepSeq : pstep (mkT (.seq (embed s) (unrollW g (embed s) k)) cs ρ)
+                        = some (mkT (embed s) (unrollW g (embed s) k :: cs) ρ) := by simp
+                    cases o₁ with
+                    | none =>
+                        simp [pure, StateT.pure] at h
+                        cases h
+                        obtain ⟨t_stk, hst, hsk, hne⟩ := ih (unrollW g (embed s) k :: cs) ρ r hde
+                        exact ⟨t_stk, .step stepIte (.step stepSeq hst), hsk, hne⟩
+                    | some =>
+                        simp only at h
+                        obtain ⟨t_stk, hst, hsk, hne⟩ := ihk cs ρ₁ r h
+                        have h_to_skip := denoteM_some_pure_steps s (unrollW g (embed s) k :: cs) ρ ρ₁ hde
+                        have hpop : pstep (mkT .skip (unrollW g (embed s) k :: cs) ρ₁)
+                            = some (mkT (unrollW g (embed s) k) cs ρ₁) := by simp
+                        refine ⟨t_stk, ?_, hsk, hne⟩
+                        exact .step stepIte (.step stepSeq (h_to_skip.trans (.step hpop hst)))
+                | false => cases h
+            | _ =>
+                refine ⟨mkT (.ite g (.seq (embed s) (unrollW g (embed s) k)) .skip) cs ρ, .refl, ?_, ?_⟩
+                · simp [pstuck, mkT_ite_step, hev]
+                · simp [mkT]
+
+/-- Monadic analogue of `denote_complete`. -/
+theorem denoteM_complete (s : PureStmt) (ρ ρ' : Env)
+    (hps : PureSteps (mkT (embed s) [] ρ) (mkT .skip [] ρ')) :
+    denoteM s ρ = (some (), ρ') := by
+  have htermB : pstuck (mkT .skip [] ρ') := by simp [pstuck, pstep_skip_empty]
+  rcases hr : denoteM s ρ with ⟨o, ρ_d⟩
+  rcases o with _ | u
+  · exfalso
+    obtain ⟨t_stk, hst, hsk, hne⟩ := denoteM_none_stuck s [] ρ ρ_d hr
+    have heq := PureSteps.stuck_unique hst hsk hps htermB
+    apply hne
+    have := congrArg Thread.stmt heq
+    simpa [mkT] using this
+  · cases u
+    have hps_fwd := denoteM_some_pure_steps s [] ρ ρ_d hr
     have htermA : pstuck (mkT .skip [] ρ_d) := by simp [pstuck, pstep_skip_empty]
     have heq := PureSteps.stuck_unique hps_fwd htermA hps htermB
     have hρ : ρ_d = ρ' := by
@@ -1651,6 +2216,12 @@ def programOfHelper (h : PureHelper) : Program where
 post-environment. `none` propagates a stuck body or an ill-typed `ret`. -/
 def denoteHelper (h : PureHelper) (ρ₀ : Env) : Option Val :=
   match denote h.body ρ₀ with
+  | (some _, ρ') => Expr.eval ρ' h.ret
+  | (none,   _)  => none
+
+/-- Monadic analogue of `denoteHelper`. Same shape over `denoteM`. -/
+def denoteHelperM (h : PureHelper) (ρ₀ : Env) : Option Val :=
+  match denoteM h.body ρ₀ with
   | (some _, ρ') => Expr.eval ρ' h.ret
   | (none,   _)  => none
 

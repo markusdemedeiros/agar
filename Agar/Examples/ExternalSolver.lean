@@ -20,6 +20,7 @@ public import Agar.Iris.Adequacy
 public import Agar.Iris.Tactics
 public import Agar.Iris.Completeness
 public import Agar.Iris.StackPush
+public import Agar.Iris.RouteABridge
 public import Agar.Examples.SimpleRangeProdComposition
 
 @[expose] public section
@@ -489,38 +490,17 @@ theorem wp_callee_routeA
           (BodyTraj.postDoReturnThread ⟨x, cont, env⟩ [] v) Φ))
     ⊢ |={⊤}=> wp rangeProdComposite3.procs (iprop(True : IProp GF)) ⊤
         ⟨(rangeProd n).body, [], bindParams ["a"] [Val.int a],
-         [⟨x, cont, env⟩], none⟩ Φ := by
-  iintro Hwand
-  -- 1. Get standalone wp from completeness_open.
-  ihave Hopen :=
-    completeness_open (prog := rangeProdComposite3) (GF := GF) (F := F)
-      (φ := helper_post_at n a)
-      rangeProdComposite3_heapFree
-      (helper_init n a)
-      (helper_init_heapFree n a)
-      (helper_safeTp n a)
-  imod Hopen with Hstandalone
-  -- Hstandalone : wp procs True ⊤ (helper_init n a) (fun v => ⌜helper_post_at n a v⌝)
-  -- 2. Reshape post via wp_wand.
-  ihave Hreshaped := wp_wand (GF := GF) rangeProdComposite3.procs
-    (iprop(True : IProp GF))
-    (Φ := fun v => iprop(⌜helper_post_at n a v⌝ : IProp GF))
-    (Ψ := fun v => wp rangeProdComposite3.procs (iprop(True : IProp GF)) ⊤
-            (BodyTraj.postDoReturnThread ⟨x, cont, env⟩ [] v) Φ)
-    (helper_init n a) $$ [Hstandalone Hwand]
-  · isplitl [Hstandalone]
-    · iexact Hstandalone
-    · iintro %v Hpurev
-      iapply Hwand $$ %v
-      iexact Hpurev
-  -- Hreshaped : wp procs True ⊤ (helper_init n a)
-  --                (fun v => wp procs True ⊤ (postDoReturnThread ...) Φ)
-  -- 3. Lift via wp_stack_push.
-  imodintro
-  show _ ⊢ wp rangeProdComposite3.procs (iprop(True : IProp GF)) ⊤
-      (BodyTraj.stackExt (helper_init n a) [⟨x, cont, env⟩]) Φ
-  iapply (BodyTraj.wp_stack_push rangeProdComposite3.procs
-    (iprop(True : IProp GF)) ⟨x, cont, env⟩ [] Φ (helper_init n a))
+         [⟨x, cont, env⟩], none⟩ Φ :=
+  wp_callee_routeA_generic (GF := GF) (F := F)
+    rangeProdComposite3
+    (helper_init n a)
+    (helper_init_heapFree n a)
+    (helper_init_strictHelperThread n a)
+    rfl
+    (helper_post_at n a)
+    (helper_safeTp n a)
+    ⟨x, cont, env⟩
+    Φ
 
 end Bridge
 

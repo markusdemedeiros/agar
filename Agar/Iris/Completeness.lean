@@ -804,7 +804,8 @@ variable {GF : BundledGFunctors.{0,0,0}} {F : Type _} [UFraction F]
   [TpGpreS GF F] [AgarG GF F] [InvGS_gen false GF]
 
 theorem percomplete
-    {prog : Program} {φ : Val → Prop} (hpf : prog.heapFree)
+    {prog : Program} {φ : Val → Prop}
+    (hpf_procs : ∀ name proc, prog.procs name = some proc → proc.heapFree)
     (γ : GName) (N : Namespace)
     (n : Nat) (t : Thread) (htf : t.heapFree) :
     inv N (Icompl_pure (GF := GF) (F := F) prog φ γ) ∗
@@ -893,8 +894,6 @@ theorem percomplete
       exact Machine.Step.step n' none t' t'' sp Mem.empty Mem.empty ts hlk
         htstep_empty
     -- Heap-free preservation on the post-step thread + spawn.
-    have hpf_procs : ∀ name proc, prog.procs name = some proc → proc.heapFree :=
-      hpf.2
     have hpreserved := tstep_heapFree_preserves htf' hpf_procs htstep
     have htf'' : t''.heapFree := hpreserved.1
     have htf_sp : ∀ ts_c, sp = some ts_c → ts_c.heapFree := hpreserved.2
@@ -1103,7 +1102,7 @@ theorem completeness
           (fun v => iprop(⌜φ v⌝ : IProp GF)) := by
   apply completeness_modulo_lemma14 (GF := GF) (F := F) hpf hs
   · intro _ _ γ N n t htf
-    exact percomplete hpf γ N n t htf
+    exact percomplete hpf.2 γ N n t htf
   · intro _ _ γ N
     exact weaken_post_proof γ N
 
@@ -1167,7 +1166,7 @@ theorem completeness_general
   imod (inv_alloc nroot (⊤ : CoPset) _) $$ HIbody_later with HI
   ihave #HI := HI
   -- Apply percomplete at (0, t_init).
-  ihave Hwp := percomplete hpf γ nroot 0 t_init htf_init $$ [HI Hn]
+  ihave Hwp := percomplete hpf.2 γ nroot 0 t_init htf_init $$ [HI Hn]
   · isplitl [HI] <;> iassumption
   -- Weaken via the standard weaken_post wand.
   ihave Hwand := weaken_post_proof γ nroot (φ := φ) (prog := prog) $$ HI
@@ -1239,7 +1238,8 @@ fork-thread post is a trivial wp wrapped in `wp_wand`, which delivers
 the trivial post. Callers must pick `True` as their `fork_post` at
 matching `wp_fork` / `wp_call` sites to keep the unification clean. -/
 theorem completeness_open
-    {prog : Program} {φ : Val → Prop} (hpf : prog.heapFree)
+    {prog : Program} {φ : Val → Prop}
+    (hpf_procs : ∀ name proc, prog.procs name = some proc → proc.heapFree)
     (t_init : Thread) (htf_init : t_init.heapFree)
     (hs : ∀ σ, Machine.SafeTp prog ⟨σ, [t_init]⟩ φ) :
     ⊢ |={⊤}=> wp prog.procs (iprop(True : IProp GF)) ⊤ t_init
@@ -1262,7 +1262,7 @@ theorem completeness_open
                                                     prog φ γ))) $$ HIbody
   imod (inv_alloc nroot (⊤ : CoPset) _) $$ HIbody_later with HI
   ihave #HI := HI
-  ihave Hwp := percomplete hpf γ nroot 0 t_init htf_init $$ [HI Hn]
+  ihave Hwp := percomplete hpf_procs γ nroot 0 t_init htf_init $$ [HI Hn]
   · isplitl [HI] <;> iassumption
   ihave Hwand := weaken_post_proof γ nroot (φ := φ) (prog := prog) $$ HI
   ihave Hfinal := wp_wand_fupd (GF := GF) prog.procs (iprop(True : IProp GF))

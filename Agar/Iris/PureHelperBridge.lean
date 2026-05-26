@@ -324,6 +324,25 @@ theorem helperTerminal_pstuck (ρf : Env) (v : Val) :
 theorem helperTerminal_toValue (ρf : Env) (v : Val) :
     (helperTerminal ρf v).toValue = some v := rfl
 
+/-- Monadic-denotation analogue of `PureHelper.reaches_terminal`. -/
+theorem PureHelper.reaches_terminalM (h : PureHelper) (ρf : Env) (v : Val)
+    (hd : denoteM h.body Env.empty = (some (), ρf))
+    (hv : Expr.eval ρf h.ret = some v) :
+    PureSteps (Thread.initial h.main) (helperTerminal ρf v) := by
+  have hstep1 : pstep (Thread.initial h.main) =
+      some (mkT (embed h.body) [.ret h.ret] Env.empty) := by
+    show pstep ⟨h.main, [], Env.empty, [], none⟩ = _
+    unfold PureHelper.main; rfl
+  have hbody : PureSteps (mkT (embed h.body) [.ret h.ret] Env.empty)
+                         (mkT .skip [.ret h.ret] ρf) :=
+    denoteM_sound h.body [.ret h.ret] Env.empty ρf hd
+  have hstep3 : pstep (mkT .skip [.ret h.ret] ρf) =
+                  some (mkT (.ret h.ret) [] ρf) := rfl
+  have hstep4 : pstep (mkT (.ret h.ret) [] ρf) = some (helperTerminal ρf v) := by
+    show pstep ⟨.ret h.ret, [], ρf, [], none⟩ = _
+    simp [pstep, tstep, hv, doReturn, helperTerminal]
+  exact .step hstep1 (hbody.trans (.step hstep3 (.single hstep4)))
+
 /-- Trajectory from the helper's initial thread to the terminal,
 witnessed by a successful body denotation and a defined return
 expression. -/
@@ -421,6 +440,62 @@ theorem Machine.safe_of_denoteHelper_total
     (hφ : ∀ ρ₀, ∃ v, denoteHelper h ρ₀ = some v ∧ φ v) :
     ∀ σ, Machine.safeFrom (programOfHelper h) σ φ :=
   Machine.safe_of_denoteHelper (hφ Env.empty)
+
+/-- Monadic-denotation analogue of `Machine.safe_of_denoteHelper`. -/
+theorem Machine.safe_of_denoteHelperM
+    {h : PureHelper} {φ : Val → Prop}
+    (hφ : ∃ v, denoteHelperM h Env.empty = some v ∧ φ v) :
+    ∀ σ, Machine.safeFrom (programOfHelper h) σ φ := by
+  intro σ n μ' htraj k t htk
+  obtain ⟨v_top, hv_top, hφ_top⟩ := hφ
+  have ⟨ρf, hd, hv⟩ :
+      ∃ ρf, denoteM h.body Env.empty = (some (), ρf) ∧
+            Expr.eval ρf h.ret = some v_top := by
+    unfold denoteHelperM at hv_top
+    rcases hdc : denoteM h.body Env.empty with ⟨o, ρf⟩
+    rw [hdc] at hv_top
+    cases o with
+    | none   => cases hv_top
+    | some _ => exact ⟨ρf, rfl, hv_top⟩
+  obtain ⟨t', hμ', hps, hHt'⟩ := machineStepStarN_helper h σ n μ' htraj
+  rcases k with _ | k
+  · rw [hμ'] at htk
+    simp at htk
+    subst htk
+    rcases hp : pstep t' with _ | tn
+    · have hps_term :
+          PureSteps (Thread.initial h.main) (helperTerminal ρf v_top) :=
+        PureHelper.reaches_terminalM h ρf v_top hd hv
+      have hstuck_term : pstuck (helperTerminal ρf v_top) :=
+        helperTerminal_pstuck ρf v_top
+      have hstuck_t' : pstuck t' := hp
+      have ht_eq : t' = helperTerminal ρf v_top :=
+        PureSteps.stuck_unique hps hstuck_t' hps_term hstuck_term
+      subst ht_eq
+      left
+      refine ⟨v_top, helperTerminal_toValue ρf v_top, fun _ => hφ_top⟩
+    · right
+      refine ⟨σ, tn, none, none, ?_⟩
+      show tstep (programOfHelper h).procs none _ _ = _
+      rw [hμ']
+      show tstep noProcs none σ t' = _
+      exact tstep_helperShape_chosen_none hp σ
+  · rw [hμ'] at htk
+    simp at htk
+
+/-- Closed-heap version of `Machine.safe_of_denoteHelperM`. -/
+theorem Machine.safe_of_denoteHelperM_closed
+    {h : PureHelper} {φ : Val → Prop}
+    (hφ : ∃ v, denoteHelperM h Env.empty = some v ∧ φ v) :
+    Machine.safe (programOfHelper h) φ :=
+  Machine.safe_of_denoteHelperM hφ Mem.empty
+
+/-- Monadic-denotation total-correctness wrapper. -/
+theorem Machine.safe_of_denoteHelperM_total
+    {h : PureHelper} {φ : Val → Prop}
+    (hφ : ∀ ρ₀, ∃ v, denoteHelperM h ρ₀ = some v ∧ φ v) :
+    ∀ σ, Machine.safeFrom (programOfHelper h) σ φ :=
+  Machine.safe_of_denoteHelperM (hφ Env.empty)
 
 /-! ## Composition with completeness
 

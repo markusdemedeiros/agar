@@ -174,6 +174,48 @@ theorem pstep_preserves_strictHelperThread {t t' : Thread}
 /-! ## `Machine.Step` characterisation for strict-helper threads,
 parametric in `prog`. -/
 
+/-- A successful `tstep` on a strict-helper thread is structurally
+constrained: `chosen = none`, the memory is unchanged, no thread is
+spawned, and the post-step thread is still strict. Extracted from
+`machineStep_strictHelper`'s analysis so it's directly available for
+Iris-level `wp`-procs-irrelevance reasoning. -/
+theorem tstep_strict_characterise
+    {procs : Name → Option Proc} {t : Thread} {chosen : Option Loc}
+    {m m' : Mem} {t' : Thread} {sp : Option Thread}
+    (he : StrictHelperThread t)
+    (h : tstep procs chosen m t = some (m', t', sp)) :
+    chosen = none ∧ m' = m ∧ sp = none ∧ StrictHelperThread t' := by
+  have h' : tstep noProcs chosen m t = some (m', t', sp) := by
+    rw [tstep_strict_procs_irrel he noProcs procs]; exact h
+  cases chosen with
+  | some l =>
+      exfalso
+      have h_none :=
+        tstep_helperShape_chosen_some
+          (strictHelperThread_helperThread he) l m
+      rw [h_none] at h'
+      cases h'
+  | none =>
+      match hp : pstep t with
+      | some tp =>
+          have hts := pstep_machine_indep t tp hp m
+          rw [hts] at h'
+          have heq : (m, tp, none) = (m', t', sp) :=
+            Option.some.inj h'
+          have hmm : m' = m := (congrArg Prod.fst heq).symm
+          have htp : tp = t' := congrArg (Prod.fst ∘ Prod.snd) heq
+          have hsp : sp = (none : Option Thread) :=
+            (congrArg (Prod.snd ∘ Prod.snd) heq).symm
+          refine ⟨rfl, hmm, hsp, ?_⟩
+          rw [← htp]; exact pstep_preserves_strictHelperThread he hp
+      | none =>
+          exfalso
+          have hts :=
+            tstep_helperShape_chosen_none_stuck
+              (strictHelperThread_helperThread he) hp m
+          rw [hts] at h'
+          cases h'
+
 theorem machineStep_strictHelper (prog : Program) {σ : Mem} {t : Thread}
     {μ' : Machine} (he : StrictHelperThread t)
     (hs : Machine.Step prog ⟨σ, [t]⟩ μ') :
