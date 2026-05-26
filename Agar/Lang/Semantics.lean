@@ -284,7 +284,7 @@ def tstep (procs : Name → Option Proc) (chosen : Option Loc)
       match t.cont, t.stack with
       | s :: rest, _      => some (m, { t with stmt := s, cont := rest }, none)
       | [],        []     => none  -- terminated
-      | [],        _ :: _ => some (doReturn m t .unit)
+      | [],        _ :: _ => some (doReturn m t (t.result.getD .unit))
   | none, .seq s₁ s₂ =>
       some (m, { t with stmt := s₁, cont := s₂ :: t.cont }, none)
   | none, .assign x e =>
